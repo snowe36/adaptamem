@@ -1,0 +1,30 @@
+# Default inner-loop protocol. Protein-specific science lives in the system YAML.
+
+force_field: CHARMM36
+water: TIP3P
+temperature_K: 310.0
+pressure_bar: 1.0
+timestep_fs: 4.0
+hydrogen_mass_amu: 1.5
+nonbonded_cutoff_nm: 1.0
+platform_preference: [CUDA, OpenCL, CPU]
+
+equilibration:
+  # Same timestep as production once packing is valid. Do not pin 2 fs.
+  timestep_fs: 4.0
+  nvt_restrained_ps: 50
+  npt_restrained_ns: 0.25
+  free_membrane_ns: 2.0
+  stop_on_membrane_qc: true
+
+trajectory:
+  format: xtc
+  save_interval_ps: 100
+
+checkpoint:
+  interval_ns: 5
+  keep_last: 3
+
+bench:
+  steps: 20000
+  reporters: false

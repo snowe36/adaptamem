@@ -1,0 +1,25 @@
+# PDB or objective — Adaptamem decides the experiment.
+
+name: unnamed
+structure: protein.pdb
+
+objective:
+  type: discover_states   # conventional | conformational_shift | discover_states
+  # observables:          # required for conformational_shift unless discover_cvs
+  #   - name: helix_rmsd
+  #     kind: rmsd
+  #     selection: "name CA and resid 20-40"
+  #     precision: 0.5
+  discover_cvs: true
+
+orientation:
+  method: auto            # auto | ppm | opm | file | none
+  topology: in
+
+membrane:
+  lipids:
+    POPC: 1.0
+  optimize_size: true
+  safety_margin_nm: 1.2
+  water_pad_nm: 1.2
+  ionic_strength_M: 0.15
