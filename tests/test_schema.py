@@ -1,10 +1,10 @@
+from pathlib import Path
+
 from adaptamem.box import plan_box
 from adaptamem.doctor import audit
 from adaptamem.objective import parse_objective
 from adaptamem.schema import load_protocol, load_system
 from adaptamem.strategy import PHYSICS_SAME, choose
-
-from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 

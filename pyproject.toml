@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "adaptamem"
 version = "0.1.0"
-description = "Membrane-protein MD engine: allocate resolution and sampling, not one long movie"
+description = "Choose resolution, configuration, and sampling for a membrane-protein question"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
