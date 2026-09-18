@@ -1,43 +1,58 @@
-# adaptamem
+# Adaptamem
 
-Generic engine for **membrane-protein molecular dynamics**. A system is a YAML recipe. The core does not know DltB, β2AR, or AftD.
+Given a protein structure and a scientific objective, construct the **cheapest simulation that is sufficient to answer it**.
 
-Objective: **scientific information per GPU-hour**, not nanoseconds per day of one trajectory.
+Not a YAML-driven MD runner. A decision engine.
 
-## What it is for
+```
+PDB / CIF
+    → Structure Doctor
+    → cheapest sufficient box
+    → short pilot
+    → dynamical cartography (what actually moves)
+    → spend GPU on uncertain states, drop redundant ones
+    → stop when the objective’s uncertainty is below the asked precision
+```
 
-Any integral membrane protein you can point a PDB/CIF at:
+Walker count and nanoseconds are **outputs**, not protocol knobs.
 
-1. **Inner loop** — OpenMM, HMR, 4 fs in equilibration and production, compact box, sparse frames.
-2. **Adaptive sampling** — user-defined CVs, many short walkers, stop when those CVs have converged.
-3. **Hybrid resolution** (later) — atomistic protein + first lipid shells; cheaper bulk. Only if the question still needs those shells.
+## What exists now
 
-Protein-family science (landmarks, activation switches, catalytic residues) belongs in the recipe’s `cvs:` block, not in Python.
+| Command | Does |
+|---------|------|
+| `adaptamem doctor protein.pdb` | Structure report (TM spans, missing bits, ligands, clashes, protonation flags) |
+| `adaptamem plan protein.pdb --objective discover-states` | Doctor + atom-count-minimizing box + experiment sketch |
+| `adaptamem validate recipe.yaml` | Load an optional recipe (hints, not a full MD deck) |
+| `adaptamem run …` | Prints the plan; physics engine is not built |
+
+## Objective, not a recipe
+
+```yaml
+objective:
+  type: discover_states          # or conformational_shift | conventional
+  discover_cvs: true
+  observables:                   # optional named questions
+    - name: helix_rmsd
+      kind: rmsd
+      selection: "name CA and resid 20-40"
+      precision: 0.5
+```
+
+If you already know the question, name observables and precisions. If you do not, `discover_states` runs a pilot and finds slow coordinates. `conventional` is the escape hatch: one trajectory, no scheduler.
+
+## Metric
+
+**Scientific information per GPU-hour**, against a fixed-budget baseline (1×100 ns vs naive *N* short runs vs Adaptamem). The paper is that comparison, not ns/day.
+
+## Roadmap
+
+See [docs/architecture.md](docs/architecture.md). Phase 1 is trustworthy PDB → membrane MD. The first novel algorithm is Phase 3 (adaptive sampler). Hybrid resolution is Phase 5–6, after the scheduler has somewhere useful to point.
 
 ## Install
 
 ```bash
-python -m venv .venv
+uv venv --python python3.11 .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+uv pip install -e ".[dev]"
+adaptamem doctor path/to/protein.pdb
 ```
-
-OpenMM is an extra (`pip install -e ".[dev,sim]"`) and is not required to validate recipes.
-
-## Commands
-
-```bash
-adaptamem init my_protein.yaml
-adaptamem validate my_protein.yaml
-adaptamem validate examples/dltb.yaml
-```
-
-`bench` (ns/day probe) and `sample` (walker farm) are next.
-
-## Recipe shape
-
-See `src/adaptamem/resources/system.template.yaml`. Examples in `examples/` are illustrations, not defaults.
-
-## Not this repo
-
-CHARMM-GUI web automation, ACEMD/GPCRmd, or a one-protein campaign (that lives in its own project and can *call* this engine).
