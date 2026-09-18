@@ -1,52 +1,56 @@
 # Adaptamem
 
-Given a protein structure and a scientific objective, construct the **cheapest simulation that is sufficient to answer it**.
+Automatically choose the physical resolution, computational configuration, and sampling strategy required to answer a membrane-protein question at minimum cost.
 
-Not a YAML-driven MD runner. A decision engine.
+Three axes, never mixed in a benchmark:
+
+1. **Cheaper timestep** — same Hamiltonian, less work per step.
+2. **Fewer timesteps** — stop, branch, or skip work that does not reduce uncertainty in the objective.
+3. **Fewer expensive atoms** — fewer particles on the atomistic force field (a *different* approximation the moment lipids or water are no longer AA).
 
 ```
-PDB / CIF
-    → Structure Doctor
-    → cheapest sufficient box
-    → short pilot
-    → dynamical cartography (what actually moves)
-    → spend GPU on uncertain states, drop redundant ones
-    → stop when the objective’s uncertainty is below the asked precision
+PDB / CIF + objective + GPU-hour budget
+        → Structure Doctor
+        → cheapest sufficient box
+        → STRATEGY (same_physics | approximation)
+        → pilot → allocate compute → stop
+        or REFUSE
 ```
-
-Walker count and nanoseconds are **outputs**, not protocol knobs.
 
 ## What exists now
 
 | Command | Does |
 |---------|------|
-| `adaptamem doctor protein.pdb` | Structure report (TM spans, missing bits, ligands, clashes, protonation flags) |
-| `adaptamem plan protein.pdb --objective discover-states` | Doctor + atom-count-minimizing box + experiment sketch |
-| `adaptamem validate recipe.yaml` | Load an optional recipe (hints, not a full MD deck) |
-| `adaptamem run …` | Prints the plan; physics engine is not built |
+| `adaptamem doctor protein.pdb` | Structure report |
+| `adaptamem plan protein.pdb --objective discover-states` | Doctor, box, **strategy on the three axes** |
+| `adaptamem validate recipe.yaml` | Optional hints |
+| `adaptamem run …` | Plan only; no MD yet |
 
-## Objective, not a recipe
+```bash
+adaptamem plan protein.pdb --objective membrane-environment --budget-hours 12
+```
+
+## Objective
 
 ```yaml
 objective:
-  type: discover_states          # or conformational_shift | conventional
+  type: discover_states    # conventional | conformational_shift | discover_states
+                           # comparison | membrane_environment
   discover_cvs: true
-  observables:                   # optional named questions
+  observables:
     - name: helix_rmsd
       kind: rmsd
       selection: "name CA and resid 20-40"
       precision: 0.5
 ```
 
-If you already know the question, name observables and precisions. If you do not, `discover_states` runs a pilot and finds slow coordinates. `conventional` is the escape hatch: one trajectory, no scheduler.
+Named observables if you know the question. `discover_states` if you do not. `comparison` optimizes U(Δ) across systems. `membrane_environment` forbids cheapening first-shell lipids.
 
 ## Metric
 
-**Scientific information per GPU-hour**, against a fixed-budget baseline (1×100 ns vs naive *N* short runs vs Adaptamem). The paper is that comparison, not ns/day.
+Information per GPU-hour, **inside one physics class**. A hybrid membrane that runs faster is not “higher ns/day.”
 
-## Roadmap
-
-See [docs/architecture.md](docs/architecture.md). Phase 1 is trustworthy PDB → membrane MD. The first novel algorithm is Phase 3 (adaptive sampler). Hybrid resolution is Phase 5–6, after the scheduler has somewhere useful to point.
+Design: [docs/architecture.md](docs/architecture.md).
 
 ## Install
 
@@ -54,5 +58,4 @@ See [docs/architecture.md](docs/architecture.md). Phase 1 is trustworthy PDB →
 uv venv --python python3.11 .venv
 source .venv/bin/activate
 uv pip install -e ".[dev]"
-adaptamem doctor path/to/protein.pdb
 ```
