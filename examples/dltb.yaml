@@ -1,0 +1,19 @@
+name: dltb_6bug
+structure: data/structures/6BUG.pdb
+notes: Example recipe only. MBOAT (PDB 6BUG).
+
+objective:
+  type: discover_states
+  discover_cvs: true
+
+orientation:
+  method: auto
+  topology: in
+
+membrane:
+  lipids:
+    POPC: 1.0
+  optimize_size: true
+  safety_margin_nm: 1.2
+  water_pad_nm: 1.2
+  ionic_strength_M: 0.15
