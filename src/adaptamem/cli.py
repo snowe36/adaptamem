@@ -9,6 +9,7 @@ from adaptamem.box import format_box, plan_box
 from adaptamem.doctor import audit, format_report
 from adaptamem.objective import parse_objective
 from adaptamem.schema import default_system_template_path, load_system
+from adaptamem.strategy import choose, format_strategy
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -32,8 +33,9 @@ def main(argv: list[str] | None = None) -> int:
     p_plan.add_argument(
         "--objective",
         default=None,
-        help="conventional | conformational-shift | discover-states",
+        help="conventional | conformational-shift | discover-states | comparison | membrane-environment",
     )
+    p_plan.add_argument("--budget-hours", type=float, default=None)
 
     p_val = sub.add_parser("validate", help="Load a system YAML")
     p_val.add_argument("system", type=Path)
@@ -41,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     p_run = sub.add_parser("run", help="Execute the planned experiment (physics not built)")
     p_run.add_argument("input", type=Path)
     p_run.add_argument("--objective", default=None)
+    p_run.add_argument("--budget-hours", type=float, default=None)
 
     args = parser.parse_args(argv)
     if args.cmd == "init":
@@ -48,11 +51,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "doctor":
         return _doctor(args.structure)
     if args.cmd == "plan":
-        return _plan(args.input, args.objective)
+        return _plan(args.input, args.objective, args.budget_hours)
     if args.cmd == "validate":
         return _validate(args.system)
     if args.cmd == "run":
-        _plan(args.input, args.objective)
+        _plan(args.input, args.objective, args.budget_hours)
         print(
             "\nphysics engine is not built — this is the decision layer only",
             file=sys.stderr,
@@ -111,7 +114,7 @@ def _resolve(path: Path, cli_objective: str | None):
     return system, audit(path), obj
 
 
-def _plan(path: Path, cli_objective: str | None) -> int:
+def _plan(path: Path, cli_objective: str | None, budget_hours: float | None = None) -> int:
     system, report, obj = _resolve(path, cli_objective)
     print(format_report(report))
     print()
@@ -121,6 +124,9 @@ def _plan(path: Path, cli_objective: str | None) -> int:
         safety_margin_nm=system.membrane.safety_margin_nm,
     )
     print(format_box(box))
+    print()
+    strat = choose(report, obj, box, budget_gpu_hours=budget_hours)
+    print(format_strategy(strat))
     print()
     print("EXPERIMENT")
     print(f"objective     {obj.type}")
@@ -132,10 +138,8 @@ def _plan(path: Path, cli_objective: str | None) -> int:
         print("  CVs from a short pilot (TICA/PCA) — not user-specified")
     else:
         print("  conventional single trajectory")
-    print("next          short pilot → dynamical cartography → allocate walkers")
-    print("stop          when uncertainty on the objective is below precision")
-    print("not decided   walker count, ns/walker (those are scheduler outputs)")
-    return 0
+    print("walker count and ns/walker are scheduler outputs, not inputs")
+    return 0 if strat.ok else 2
 
 
 def _validate(system_path: Path) -> int:

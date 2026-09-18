@@ -5,7 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-OBJECTIVE_TYPES = ("conventional", "conformational_shift", "discover_states")
+OBJECTIVE_TYPES = (
+    "conventional",
+    "conformational_shift",
+    "discover_states",
+    "comparison",
+    "membrane_environment",
+)
 
 
 @dataclass
@@ -53,10 +59,9 @@ def parse_objective(raw: Any, *, cli_type: str | None = None) -> Objective:
     discover = bool(data.get("discover_cvs", kind == "discover_states"))
     if kind == "discover_states":
         discover = True
-    if kind == "conformational_shift" and not obs and not discover:
-        raise ValueError(
-            "conformational_shift needs observables or discover_cvs: true"
-        )
+    if kind in {"conformational_shift", "comparison", "membrane_environment"}:
+        if not obs and not discover:
+            raise ValueError(f"{kind} needs observables or discover_cvs: true")
     return Objective(type=kind, observables=obs, discover_cvs=discover)
 
 
