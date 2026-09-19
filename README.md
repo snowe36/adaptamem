@@ -23,11 +23,17 @@ PDB / CIF + objective + GPU-hour budget
 |---------|------|
 | `adaptamem doctor protein.pdb` | Structure report |
 | `adaptamem plan protein.pdb --objective discover-states` | Doctor, box, **strategy on the three axes** |
+| `adaptamem assemble protein.pdb --out runs/job` | Orient TM → z, compact OpenMM `addMembrane`, CHARMM36 HMR 4 fs |
+| `adaptamem equilibrate runs/job` | Minimize + 4 fs eq; stop when membrane QC is ready |
+| `adaptamem bench runs/job` | ns/day of **this** box (same_physics only) |
+| `adaptamem run protein.pdb --out runs/job` | Plan + assemble + equilibrate |
 | `adaptamem validate recipe.yaml` | Optional hints |
-| `adaptamem run …` | Plan only; no MD yet |
+
+Physics is optional: `pip install 'adaptamem[sim]'` (OpenMM). Doctor/plan work without it. `assemble` refuses doctor ACTION items unless `--force`. Mixed lipids and PPM are not Phase 1.
 
 ```bash
 adaptamem plan protein.pdb --objective membrane-environment --budget-hours 12
+adaptamem assemble protein.pdb --objective discover-states --out runs/job
 ```
 
 ## Objective
@@ -57,5 +63,5 @@ Design: [docs/architecture.md](docs/architecture.md).
 ```bash
 uv venv --python python3.11 .venv
 source .venv/bin/activate
-uv pip install -e ".[dev]"
+uv pip install -e ".[dev,sim]"
 ```
