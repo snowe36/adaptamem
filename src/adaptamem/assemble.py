@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -84,6 +85,7 @@ def assemble(
         workdir / "oriented.pdb",
     )
     log(format_orient(oriented).split("\n")[0])
+    assert_backbone_packable(oriented.path)
 
     from openmm import XmlSerializer, unit
     from openmm.app import Modeller, PDBFile
@@ -97,6 +99,7 @@ def assemble(
     log("add missing heavy atoms + CHARMM36 hydrogens")
     protein, fix_notes = _load_protein(oriented.path, ff)
     notes.extend(fix_notes)
+    assert_finite_positions(protein.positions, where="after pdbfixer")
 
     plat, plat_name = pick_platform(proto.platform_preference)
     pads = _pad_schedule(pad)
@@ -119,6 +122,10 @@ def assemble(
             try:
                 log(f"addMembrane {lipid} platform={pname} pad={p:g} nm")
                 _add_membrane(modeller, ff, pobj, lipid, p, ionic)
+                try:
+                    assert_finite_positions(modeller.positions, where="after addMembrane")
+                except RefuseError as nan_exc:
+                    raise RuntimeError(str(nan_exc.message)) from nan_exc
                 plat_name = pname
                 used_pad = p
                 built = True
@@ -278,6 +285,46 @@ def default_workdir(session: Session, out: Path | None) -> Path:
     if out is not None:
         return Path(out)
     return Path("runs") / session.system.name
+
+
+def assert_backbone_packable(pdb_path: Path, *, min_ca_ca_angstrom: float = 2.5) -> None:
+    """Refuse a stacked backbone before addMembrane. Distances in Å from PDB columns."""
+    cas: dict[tuple[str, int], tuple[float, float, float]] = {}
+    for line in Path(pdb_path).read_text().splitlines():
+        if not line.startswith("ATOM"):
+            continue
+        if line[12:16].strip() != "CA":
+            continue
+        x, y, z = float(line[30:38]), float(line[38:46]), float(line[46:54])
+        if any(math.isnan(c) or math.isinf(c) for c in (x, y, z)):
+            raise RefuseError(f"NaN/Inf CA coordinates in {pdb_path}", code="STRUCTURE")
+        chain = line[21].strip() or "A"
+        resid = int(line[22:26])
+        cas[(chain, resid)] = (x, y, z)
+    by_chain: dict[str, list[tuple[int, tuple[float, float, float]]]] = {}
+    for (ch, resid), xyz in cas.items():
+        by_chain.setdefault(ch, []).append((resid, xyz))
+    for ch, pts in by_chain.items():
+        pts.sort()
+        for (r0, a), (r1, b) in zip(pts, pts[1:], strict=False):
+            if r1 != r0 + 1:
+                continue
+            d = math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2)
+            if d < min_ca_ca_angstrom:
+                raise RefuseError(
+                    f"consecutive CA–CA {ch}:{r0}-{r1} is {d:.2f} Å "
+                    f"(<{min_ca_ca_angstrom:g}); stacked backbone, not addMembrane",
+                    code="STRUCTURE",
+                )
+
+
+def assert_finite_positions(positions: Any, *, where: str) -> None:
+    from openmm import unit
+
+    for vec in positions:
+        xyz = vec.value_in_unit(unit.nanometer) if hasattr(vec, "value_in_unit") else vec
+        if any(math.isnan(float(c)) or math.isinf(float(c)) for c in xyz):
+            raise RefuseError(f"NaN/Inf coordinates {where}", code="STRUCTURE")
 
 
 def _load_protein(oriented: Path, ff: Any) -> tuple[Any, list[str]]:

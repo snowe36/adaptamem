@@ -53,7 +53,7 @@ Layers stay separate: physics validity, performance (`bench`), inference (`sampl
 | Helix fixture (`tests/fixtures/helix.pdb`) | 40 LEU; doctor finds **≥1** TM span |
 | OpenMM extra | optional `[sim]`; assemble/eq/bench skipped in CI |
 | Public demo protein | Glycophorin A (PDB 1AFO), not AftD/TmaT |
-| GPU stock (this session) | Secure RTX 4090 **HIGH** in EU-RO-1 at **$0.74/hr**; community 4090 **NONE**. Helix `assemble` reached **35607** atoms; short eq NaN — **no ns/day quoted** |
+| GPU bench (pod `i3ha8sl8wymclh`) | Secure RTX 4090, EU-RO-1, **$0.74/hr**. CHARMM36 HMR 4 fs, 31213 atoms: **1052.2 ns/day** CUDA in 1.31 s (`runs/gpu/bench.json`) |
 
 A local OpenCL bench of one assembled helix is not a product result and is not quoted here.
 
@@ -80,11 +80,11 @@ adaptamem plan  tests/fixtures/helix.pdb --objective discover-states
 
 Optional physics: `uv sync --extra dev --extra sim` then `adaptamem assemble …` / `run`.
 
-GPU throughput on a CUDA box (CPU-minimize, then time CUDA; caches the assembled system so a second run is the timed loop):
+GPU throughput on a CUDA box (CPU-minimize, then time CUDA; caches the assembled system so a second run is the timed loop). On Linux GPU hosts install `openmm[cuda12]`, not the CPU-only `openmm` wheel:
 
 ```bash
-make gpu
-# or: python scripts/gpu_job.py --out runs/gpu --steps 4000
+pip install 'openmm[cuda12]' pdbfixer
+python scripts/gpu_job.py --out runs/gpu --steps 4000
 # quote ns/day only from runs/gpu/bench.json
 ```
 

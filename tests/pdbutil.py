@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 # Approximate LEU heavy geometry, enough for CHARMM36 template matching.
@@ -20,20 +21,33 @@ _LYS_BB = (
 
 
 def helix_pdb(path: Path, *, axis: str = "z", n: int = 40, resname: str = "LEU") -> Path:
-    """Minimal TM-like helix. axis is the long direction of the CA trace."""
+    """TM poly-Leu: 100 deg/res, 1.5 Å rise, CA ~2.3 Å off the long axis, centered."""
     atoms = _LEU if resname == "LEU" else _LYS_BB
     lines = ["HEADER    TEST"]
     serial = 1
+    rise = 1.5
+    twist = math.radians(100.0)
+    along0 = -0.5 * (n - 1) * rise
+    shift = 2.3 - 1.46
     for i in range(n):
-        t = i * 1.5
-        ox = t if axis == "x" else 0.0
-        oy = t if axis == "y" else 0.0
-        oz = t if axis == "z" else 0.0
+        ang = i * twist
+        ca, sa = math.cos(ang), math.sin(ang)
+        along = along0 + i * rise
         for name, dx, dy, dz in atoms:
+            x0, y0 = dx + shift, dy
+            xr = x0 * ca - y0 * sa
+            yr = x0 * sa + y0 * ca
+            za = along + dz
+            if axis == "x":
+                ox, oy, oz = za, xr, yr
+            elif axis == "y":
+                ox, oy, oz = yr, za, xr
+            else:
+                ox, oy, oz = xr, yr, za
             elem = name[0]
             lines.append(
                 f"ATOM  {serial:5d}  {name:<3s} {resname} A{i + 1:4d}    "
-                f"{ox + dx:8.3f}{oy + dy:8.3f}{oz + dz:8.3f}  1.00  0.00           {elem}"
+                f"{ox:8.3f}{oy:8.3f}{oz:8.3f}  1.00  0.00           {elem}"
             )
             serial += 1
     lines.append("END")

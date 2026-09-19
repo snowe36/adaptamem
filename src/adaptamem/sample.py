@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -62,6 +64,8 @@ class SampleResult:
     refused: str | None
     path: Path | None = None
     executed: bool = False
+    gpu_hours: float | None = None
+    spent_ns: float = 0.0
 
 
 def schedule(
@@ -187,6 +191,8 @@ def sample(
     ns_cap: float | None = None,
     seed: int = 42,
     progress: Callable[[str], None] | None = None,
+    run_chunk_fn: Callable[..., float] | None = None,
+    execute_hours: float | None = None,
 ) -> SampleResult:
     """initialize → pilot → run_chunk → analyze → select → branch → stop|REFUSE."""
     log = progress or (lambda _m: None)
@@ -202,8 +208,10 @@ def sample(
     decisions: list[Decision] = []
 
     log("initialize")
+    spent_ns = 0.0
+    gpu_hours = None
     if execute:
-        walkers, executed = _execute_loop(
+        walkers, executed, gpu_hours, spent_ns = _execute_loop(
             workdir,
             objective,
             sched,
@@ -212,10 +220,17 @@ def sample(
             ns_cap=ns_cap,
             seed=seed,
             progress=log,
+            budget_hours=execute_hours if execute_hours is not None else budget_hours,
+            run_chunk_fn=run_chunk_fn,
         )
 
     log("analyze")
-    diags = analyze(walkers, objective, trajectory_ns=sched.total_ns)
+    diags = analyze(
+        walkers,
+        objective,
+        gpu_hours=gpu_hours,
+        trajectory_ns=spent_ns or sched.total_ns,
+    )
     ctx = SelectContext(walkers=walkers, observables=list(objective.observables), rng_seed=seed)
     log(f"select={select}")
     decisions = policy(ctx)
@@ -228,6 +243,7 @@ def sample(
         decisions[0].action = KEEP
         decisions[0].reason += " (keep last walker)"
 
+    refuse_code = "BUDGET"
     for name, d in diags.items():
         diag = Diagnostics(
             estimate=d.get("estimate"),
@@ -245,23 +261,26 @@ def sample(
         msg = _coverage_refuse(diag, n_walkers=max(len(walkers), 1))
         if msg:
             refused = msg
-            raise RefuseError(msg, code="COVERAGE")
+            refuse_code = "COVERAGE"
         prec = None
         for o in objective.observables:
             if o.name == name:
                 prec = o.precision
+        budget_spent = budget_hours is not None or (executed and ns_cap is not None)
         if (
-            prec is not None
+            refused is None
+            and prec is not None
             and diag.ci95 is not None
             and diag.ci95 > prec
-            and budget_hours is not None
-            and all(x.action == STOP for x in decisions)
+            and budget_spent
+            and (all(x.action == STOP for x in decisions) or executed)
         ):
-            raise RefuseError(
-                f"Target precision cannot be reached within the supplied "
-                f"{budget_hours:g} GPU-hour budget.",
-                code="BUDGET",
+            hours = budget_hours if budget_hours is not None else gpu_hours
+            label = f"{hours:g} GPU-hour" if hours is not None else "ns"
+            refused = (
+                f"Target precision cannot be reached within the supplied {label} budget."
             )
+            refuse_code = "BUDGET"
 
     stopped_flag = bool(decisions) and all(d.action == STOP for d in decisions)
     result = SampleResult(
@@ -274,8 +293,12 @@ def sample(
         stopped=stopped_flag,
         refused=refused,
         executed=executed,
+        gpu_hours=gpu_hours,
+        spent_ns=spent_ns,
     )
     result.path = write_sample(result, workdir, extra={"seed": seed})
+    if refused:
+        raise RefuseError(refused, code=refuse_code)
     existing = {}
     camp_path = workdir / "campaign.json"
     if camp_path.is_file():
@@ -331,66 +354,172 @@ def _execute_loop(
     ns_cap: float | None,
     seed: int,
     progress: Callable[[str], None],
-) -> tuple[dict[str, dict[str, list[float]]], bool]:
-    from adaptamem.observables import atoms_from_topology, positions_nm
-    from adaptamem.produce import run_chunk
-    from adaptamem.schema import load_protocol
-    from adaptamem.sim import langevin, pick_platform, require_openmm
+    budget_hours: float | None = None,
+    run_chunk_fn: Callable[..., float] | None = None,
+) -> tuple[dict[str, dict[str, list[float]]], bool, float, float]:
+    """EXTEND / BRANCH / STOP / KEEP from checkpoints until GPU-hours or ns_cap."""
+    injected = run_chunk_fn is not None
+    if not injected:
+        from adaptamem.observables import atoms_from_topology, positions_nm
+        from adaptamem.produce import run_chunk as _run_chunk
+        from adaptamem.schema import load_protocol
+        from adaptamem.sim import pick_platform, require_openmm
 
-    require_openmm()
-    from openmm import XmlSerializer, unit
-    from openmm.app import PDBFile, Simulation
+        require_openmm()
+        from openmm import XmlSerializer, unit
+        from openmm.app import PDBFile
 
-    proto = load_protocol()
-    pdb_path = workdir / "eq.pdb"
-    if not pdb_path.is_file():
-        pdb_path = workdir / "assembled.pdb"
-    xml = workdir / "system.xml"
-    if not pdb_path.is_file() or not xml.is_file():
-        raise RefuseError(f"sample --execute needs an assembled system in {workdir}", code="NOT_READY")
-    pdb = PDBFile(str(pdb_path))
-    system = XmlSerializer.deserialize(xml.read_text())
-    plat, _name = pick_platform(proto.platform_preference)
-    atoms = atoms_from_topology(pdb.topology)
-    ref_xyz = positions_nm(pdb.positions)
-    interval = max(1, int(round(proto.save_interval_ps * 1000.0 / proto.timestep_fs)))
-    chunk = chunk_ns if chunk_ns is not None else min(sched.ns_per_walker, 1.0)
-    chunk_steps = max(1, int(round(chunk * 1_000_000.0 / proto.timestep_fs)))
-    n_run = max(sched.n_pilot, sched.n_walkers, 1)
+        run_chunk_fn = _run_chunk
+        proto = load_protocol()
+        pdb_path = workdir / "eq.pdb"
+        if not pdb_path.is_file():
+            pdb_path = workdir / "assembled.pdb"
+        xml = workdir / "system.xml"
+        if not pdb_path.is_file() or not xml.is_file():
+            raise RefuseError(
+                f"sample --execute needs an assembled system in {workdir}",
+                code="NOT_READY",
+            )
+        pdb = PDBFile(str(pdb_path))
+        system = XmlSerializer.deserialize(xml.read_text())
+        plat, _name = pick_platform(proto.platform_preference)
+        atoms = atoms_from_topology(pdb.topology)
+        ref_xyz = positions_nm(pdb.positions)
+        interval = max(1, int(round(proto.save_interval_ps * 1000.0 / proto.timestep_fs)))
+        chunk = chunk_ns if chunk_ns is not None else min(sched.ns_per_walker, 1.0)
+        chunk_steps = max(1, int(round(chunk * 1_000_000.0 / proto.timestep_fs)))
+        timestep_fs = proto.timestep_fs
+        box = pdb.topology.getPeriodicBoxVectors()
+    else:
+        proto = pdb = system = plat = atoms = box = None
+        unit = None  # type: ignore[assignment]
+        ref_xyz = []
+        interval = 1
+        chunk_steps = 1
+        timestep_fs = 4.0
+
+    policy = get_policy(select)
+    n_start = max(sched.n_pilot, sched.n_walkers, 1)
     cap = ns_cap if ns_cap is not None else sched.total_ns
-    traces: dict[str, dict[str, list[float]]] = {}
-    spent = 0.0
     wdir = workdir / "walkers"
     wdir.mkdir(parents=True, exist_ok=True)
-    box = pdb.topology.getPeriodicBoxVectors()
-    for i in range(n_run):
-        if spent >= cap:
-            break
-        wid = f"w{i:03d}"
-        progress(f"pilot/run_chunk {wid}")
+    obs = list(objective.observables)
+
+    def _new_sim(rng: int, ckpt: Path | None) -> Any:
+        if injected:
+            return None
+        from openmm.app import Simulation
+
+        from adaptamem.sim import langevin
+
         sim = Simulation(pdb.topology, system, langevin(proto), plat)
-        sim.context.setPositions(pdb.positions)
-        if box is not None:
-            sim.context.setPeriodicBoxVectors(*box)
-        sim.context.setVelocitiesToTemperature(proto.temperature_K * unit.kelvin, seed + i)
+        if ckpt is not None and ckpt.is_file():
+            sim.loadCheckpoint(str(ckpt))
+        else:
+            sim.context.setPositions(pdb.positions)
+            if box is not None:
+                sim.context.setPeriodicBoxVectors(*box)
+        sim.context.setVelocitiesToTemperature(proto.temperature_K * unit.kelvin, rng)
+        return sim
+
+    def _record(wid: str, named: dict[str, list[float]]) -> None:
+        (wdir / wid / "walker.states").write_text(json.dumps(named, indent=2) + "\n")
+
+    walkers: list[dict[str, Any]] = []
+    for i in range(n_start):
+        wid = f"w{i:03d}"
         wd = wdir / wid
         wd.mkdir(exist_ok=True)
-        traces[wid] = {o.name: [] for o in objective.observables}
-        spent += run_chunk(
-            sim,
-            n_steps=chunk_steps,
-            interval=interval,
-            observables=list(objective.observables),
-            atoms=atoms,
-            ref_xyz=ref_xyz,
-            traces=traces[wid],
-            log_path=wd / "walker.log",
-            t0_ns=0.0,
-            timestep_fs=proto.timestep_fs,
-            ckpt_path=wd / "checkpoint.chk",
+        ckpt = wd / "checkpoint.chk"
+        walkers.append(
+            {
+                "id": wid,
+                "dir": wd,
+                "ckpt": ckpt,
+                "traces": {o.name: [] for o in obs},
+                "t_ns": 0.0,
+                "step": True,
+                "sim": _new_sim(seed + i, None),
+            }
         )
-        (wd / "walker.states").write_text(json.dumps(traces[wid], indent=2) + "\n")
-    return traces, True
+    next_i = n_start
+    spent = 0.0
+    t0 = time.perf_counter()
+    max_walkers = 32
+
+    while True:
+        hours_used = (time.perf_counter() - t0) / 3600.0
+        if spent >= cap:
+            break
+        if budget_hours is not None and hours_used >= budget_hours:
+            break
+        live = [w for w in walkers if w["step"]]
+        if not live:
+            break
+        for w in live:
+            hours_used = (time.perf_counter() - t0) / 3600.0
+            if spent >= cap or (budget_hours is not None and hours_used >= budget_hours):
+                break
+            progress(f"run_chunk {w['id']}")
+            ns = run_chunk_fn(
+                w["sim"],
+                n_steps=chunk_steps,
+                interval=interval,
+                observables=obs,
+                atoms=atoms,
+                ref_xyz=ref_xyz,
+                traces=w["traces"],
+                log_path=w["dir"] / "walker.log",
+                t0_ns=w["t_ns"],
+                timestep_fs=timestep_fs,
+                ckpt_path=w["ckpt"],
+            )
+            w["t_ns"] += float(ns)
+            spent += float(ns)
+            _record(w["id"], w["traces"])
+
+        traces_now = {w["id"]: w["traces"] for w in walkers}
+        ctx = SelectContext(walkers=traces_now, observables=obs, rng_seed=seed)
+        progress("analyze")
+        progress(f"select={select}")
+        decisions = policy(ctx)
+        by_id = {w["id"]: w for w in walkers}
+        spawned: list[dict[str, Any]] = []
+        for d in decisions:
+            progress(d.reason)
+            w = by_id[d.walker_id]
+            if d.action == STOP:
+                w["step"] = False
+            elif d.action == KEEP:
+                w["step"] = False
+            elif d.action == EXTEND:
+                w["step"] = True
+            elif d.action == BRANCH:
+                w["step"] = True
+                if next_i >= max_walkers:
+                    continue
+                nid = f"w{next_i:03d}"
+                nd = wdir / nid
+                nd.mkdir(exist_ok=True)
+                nckpt = nd / "checkpoint.chk"
+                if w["ckpt"].is_file():
+                    shutil.copy2(w["ckpt"], nckpt)
+                spawned.append(
+                    {
+                        "id": nid,
+                        "dir": nd,
+                        "ckpt": nckpt,
+                        "traces": {o.name: [] for o in obs},
+                        "t_ns": 0.0,
+                        "step": True,
+                        "sim": _new_sim(seed + next_i, nckpt if nckpt.is_file() else w["ckpt"]),
+                    }
+                )
+                next_i += 1
+        walkers.extend(spawned)
+
+    hours_used = (time.perf_counter() - t0) / 3600.0
+    return {w["id"]: w["traces"] for w in walkers}, True, hours_used, spent
 
 
 def format_schedule(s: WalkerSchedule) -> str:
@@ -413,6 +542,10 @@ def format_sample(r: SampleResult) -> str:
     lines = [format_schedule(r.schedule), f"select      {r.select}", f"loop        {' → '.join(r.loop)}"]
     if r.executed:
         lines.append("executed    true")
+        if r.spent_ns:
+            lines.append(f"spent_ns    {r.spent_ns:g}")
+        if r.gpu_hours is not None:
+            lines.append(f"gpu_hours   {r.gpu_hours:g}")
     for d in r.decisions:
         lines.append(f"  {d.get('walker_id')}  {d.get('action')}  {d.get('reason')}")
     for name, diag in r.diagnostics.items():
@@ -462,6 +595,9 @@ def write_sample(r: SampleResult, workdir: Path, extra: dict[str, Any] | None = 
         "diagnostics": r.diagnostics,
         "executed": r.executed,
         "stopped": r.stopped,
+        "gpu_hours": r.gpu_hours,
+        "spent_ns": r.spent_ns,
+        "values": _flatten(r.traces) if r.traces else {},
         **(extra or {}),
     }
     path = workdir / "sample.json"

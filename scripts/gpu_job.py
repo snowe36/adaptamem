@@ -3,7 +3,7 @@
 
 Reusable GPU entrypoint — no adaptamem install required:
 
-    pip install 'openmm>=8.1' pdbfixer
+    pip install 'openmm[cuda12]' pdbfixer
     python scripts/gpu_job.py --out /workspace/out --steps 4000
 
 Caches assembled.xml in --out so a second run is just the timed loop.
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,19 +31,47 @@ LEU = (
 
 
 def helix_pdb(path: Path, n: int = 20) -> Path:
+    """TM poly-Leu: 100 deg/res, 1.5 Å rise, CA ~2.3 Å off z, centered at z=0."""
     lines = ["HEADER    GPUJOB"]
     serial = 1
+    rise = 1.5
+    twist = math.radians(100.0)
+    z0 = -0.5 * (n - 1) * rise
+    shift = 2.3 - 1.46
     for i in range(n):
-        z = i * 1.5
+        ang = i * twist
+        ca, sa = math.cos(ang), math.sin(ang)
+        z = z0 + i * rise
         for name, dx, dy, dz in LEU:
+            x0, y0 = dx + shift, dy
+            x = x0 * ca - y0 * sa
+            y = x0 * sa + y0 * ca
             lines.append(
                 f"ATOM  {serial:5d}  {name:<3s} LEU A{i + 1:4d}    "
-                f"{dx:8.3f}{dy:8.3f}{z + dz:8.3f}  1.00  0.00           {name[0]}"
+                f"{x:8.3f}{y:8.3f}{z + dz:8.3f}  1.00  0.00           {name[0]}"
             )
             serial += 1
     lines.append("END")
     path.write_text("\n".join(lines) + "\n")
     return path
+
+
+def _has_nan(positions) -> bool:
+    from openmm import unit
+
+    for vec in positions:
+        xyz = vec.value_in_unit(unit.nanometer) if hasattr(vec, "value_in_unit") else vec
+        if any(math.isnan(float(c)) for c in xyz):
+            return True
+    return False
+
+
+def _pad_schedule(min_pad: float) -> list[float]:
+    pads = [float(min_pad)]
+    for p in (2.0, 2.5, 3.0):
+        if p > min_pad:
+            pads.append(p)
+    return pads
 
 
 def pick_platform(order: list[str]):
@@ -99,20 +128,34 @@ def assemble(out: Path, *, n_leu: int, pad_nm: float) -> None:
     ff = ForceField("charmm36.xml", "charmm36/water.xml")
     protein = load_protein(pdb_path, ff)
     cpu, _ = pick_platform(["CPU"])
-    modeller = Modeller(protein.topology, protein.positions)
-    kwargs = dict(
-        lipidType="POPC",
-        membraneCenterZ=0.0 * unit.nanometer,
-        minimumPadding=float(pad_nm) * unit.nanometer,
-        positiveIon="K+",
-        negativeIon="Cl-",
-        ionicStrength=0.15 * unit.molar,
-        neutralize=True,
-    )
-    try:
-        modeller.addMembrane(ff, platform=cpu, **kwargs)
-    except TypeError:
-        modeller.addMembrane(ff, **kwargs)
+    last: Exception | None = None
+    modeller = None
+    for pad in _pad_schedule(pad_nm):
+        trial = Modeller(protein.topology, protein.positions)
+        kwargs = dict(
+            lipidType="POPC",
+            membraneCenterZ=0.0 * unit.nanometer,
+            minimumPadding=float(pad) * unit.nanometer,
+            positiveIon="K+",
+            negativeIon="Cl-",
+            ionicStrength=0.15 * unit.molar,
+            neutralize=True,
+        )
+        try:
+            print(f"addMembrane pad={pad} nm", flush=True)
+            try:
+                trial.addMembrane(ff, platform=cpu, **kwargs)
+            except TypeError:
+                trial.addMembrane(ff, **kwargs)
+            if _has_nan(trial.positions):
+                raise RuntimeError("addMembrane produced NaN")
+            modeller = trial
+            break
+        except Exception as exc:
+            last = exc
+            print(f"addMembrane failed pad={pad}: {exc}", flush=True)
+    if modeller is None:
+        raise RuntimeError(f"addMembrane failed: {last}")
     hmass = 4.0 * unit.amu
     system = ff.createSystem(
         modeller.topology,
@@ -147,8 +190,17 @@ def minimize_cpu(topology, system, positions, box):
     sim.context.setPositions(positions)
     if box is not None:
         sim.context.setPeriodicBoxVectors(*box)
-    sim.minimizeEnergy(maxIterations=400)
-    return sim.context.getState(getPositions=True).getPositions()
+    try:
+        sim.minimizeEnergy(maxIterations=400)
+        pos = sim.context.getState(getPositions=True).getPositions()
+        if _has_nan(pos):
+            raise RuntimeError("minimize produced NaN")
+        return pos
+    except Exception as exc:
+        print(f"CPU minimize failed: {exc}", flush=True)
+        if _has_nan(positions):
+            raise
+        return positions
 
 
 def timed_steps(topology, system, positions, box, n_steps: int):
@@ -191,12 +243,22 @@ def run(out: Path, *, steps: int, pad_nm: float, n_leu: int, rebuild: bool) -> d
     out.mkdir(parents=True, exist_ok=True)
     assembled = out / "assembled.pdb"
     xml = out / "system.xml"
-    if rebuild or not assembled.is_file() or not xml.is_file():
+    reuse = (
+        not rebuild
+        and assembled.is_file()
+        and xml.is_file()
+    )
+    if reuse:
+        pdb = PDBFile(str(assembled))
+        if _has_nan(pdb.positions):
+            print(f"cache NaN {assembled}; rebuild", flush=True)
+            reuse = False
+    if not reuse:
         print(f"assemble n_leu={n_leu} pad={pad_nm} nm", flush=True)
         assemble(out, n_leu=n_leu, pad_nm=pad_nm)
+        pdb = PDBFile(str(assembled))
     else:
         print(f"reuse {assembled}", flush=True)
-    pdb = PDBFile(str(assembled))
     system = XmlSerializer.deserialize(xml.read_text())
     box = pdb.topology.getPeriodicBoxVectors()
     print("CPU minimize", flush=True)
@@ -247,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="OpenMM CHARMM36 GPU throughput")
     p.add_argument("--out", type=Path, default=Path("runs/gpu"))
     p.add_argument("--steps", type=int, default=4000)
-    p.add_argument("--pad", type=float, default=1.2)
+    p.add_argument("--pad", type=float, default=2.0)
     p.add_argument("--n-leu", type=int, default=20)
     p.add_argument("--rebuild", action="store_true")
     p.add_argument(

@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.4", "ruff>=0.6"]
 sim = ["openmm>=8.1", "pdbfixer>=1.9", "mdtraj>=1.10"]
+gpu = ["openmm[cuda12]", "pdbfixer>=1.9", "mdtraj>=1.10"]
 
 [project.scripts]
 adaptamem = "adaptamem.cli:main"

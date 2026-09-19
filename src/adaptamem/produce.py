@@ -31,6 +31,7 @@ class ProduceResult:
     diagnostics: dict[str, Any]
     path: Path
     notes: list[str] = field(default_factory=list)
+    gpu_hours: float = 0.0
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -216,6 +217,7 @@ def produce(
         diagnostics=diags,
         path=out,
         notes=notes,
+        gpu_hours=gpu_hours,
     )
 
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from adaptamem.assemble import assemble, default_workdir
+from adaptamem.assemble import assemble, assert_backbone_packable, default_workdir
 from adaptamem.cli import main
 from adaptamem.errors import RefuseError
 from adaptamem.lipids import plan_mix
@@ -43,6 +43,29 @@ def test_unknown_lipid_refuses():
         assert "POPG" in exc.message
         return
     raise AssertionError("expected RefuseError")
+
+
+def test_twisted_helix_is_packable(tmp_path: Path):
+    pdb = helix_pdb(tmp_path / "leu.pdb")
+    assert_backbone_packable(pdb)
+
+
+def test_stacked_backbone_refused_before_addmembrane(tmp_path: Path):
+    lines = ["HEADER    STACK"]
+    serial = 1
+    for i in range(8):
+        z = i * 1.5
+        for name, x in (("N", 0.0), ("CA", 1.46), ("C", 2.0)):
+            lines.append(
+                f"ATOM  {serial:5d}  {name:<3s} LEU A{i + 1:4d}    "
+                f"{x:8.3f}{0.0:8.3f}{z:8.3f}  1.00  0.00           {name[0]}"
+            )
+            serial += 1
+    lines.append("END")
+    stacked = tmp_path / "stack.pdb"
+    stacked.write_text("\n".join(lines) + "\n")
+    with pytest.raises(RefuseError, match="stacked backbone"):
+        assert_backbone_packable(stacked)
 
 
 def test_assemble_refuses_no_tm(tmp_path: Path):

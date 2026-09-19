@@ -5,7 +5,14 @@ from adaptamem.box import plan_box
 from adaptamem.doctor import audit
 from adaptamem.errors import RefuseError
 from adaptamem.objective import parse_objective
-from adaptamem.sample import mean_ci, schedule, stopped, write_schedule
+from adaptamem.sample import (
+    WalkerSchedule,
+    _execute_loop,
+    mean_ci,
+    schedule,
+    stopped,
+    write_schedule,
+)
 from adaptamem.strategy import PHYSICS_SAME
 
 from pdbutil import helix_pdb
@@ -72,3 +79,95 @@ def test_write_sample_json(tmp_path: Path):
     data = json.loads(path.read_text())
     assert data["n_walkers"] == s.n_walkers
     assert data["physics"] == PHYSICS_SAME
+
+
+def _fake_chunk(calls: list[str]):
+    def fake(_sim, **kwargs):
+        wid = Path(kwargs["log_path"]).parent.name
+        calls.append(wid)
+        Path(kwargs["log_path"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(kwargs["log_path"]).touch()
+        ckpt = kwargs.get("ckpt_path")
+        if ckpt is not None:
+            Path(ckpt).write_bytes(b"ckpt")
+        traces = kwargs["traces"]
+        if wid == "w001":
+            traces.setdefault("cv", []).extend([0.0] * 8)
+        else:
+            traces.setdefault("cv", []).extend([0.0, 10.0, 0.0, 10.0])
+        return 0.1
+
+    return fake
+
+
+def test_execute_loop_branches_and_skips_stopped(tmp_path: Path):
+    obj = parse_objective(
+        {
+            "type": "conformational_shift",
+            "observables": [
+                {"name": "cv", "kind": "distance", "selection": "name CA", "precision": 0.05}
+            ],
+        }
+    )
+    sched = WalkerSchedule(
+        n_pilot=0,
+        ns_pilot=0.0,
+        n_walkers=2,
+        ns_per_walker=1.0,
+        stop_rule="test",
+        physics=PHYSICS_SAME,
+        discover_cvs=False,
+    )
+    calls: list[str] = []
+    traces, ok, _hours, spent = _execute_loop(
+        tmp_path,
+        obj,
+        sched,
+        select="uncertainty",
+        chunk_ns=0.1,
+        ns_cap=0.45,
+        seed=1,
+        progress=lambda _m: None,
+        run_chunk_fn=_fake_chunk(calls),
+    )
+    assert ok
+    assert spent > 0
+    assert "w002" in traces
+    assert calls.count("w001") == 1
+    assert calls.count("w000") >= 2
+    assert "w002" in calls
+
+
+def test_execute_loop_random_does_not_branch(tmp_path: Path):
+    obj = parse_objective(
+        {
+            "type": "conformational_shift",
+            "observables": [
+                {"name": "cv", "kind": "distance", "selection": "name CA", "precision": 0.05}
+            ],
+        }
+    )
+    sched = WalkerSchedule(
+        n_pilot=0,
+        ns_pilot=0.0,
+        n_walkers=2,
+        ns_per_walker=1.0,
+        stop_rule="test",
+        physics=PHYSICS_SAME,
+        discover_cvs=False,
+    )
+    calls: list[str] = []
+    traces, ok, _hours, _spent = _execute_loop(
+        tmp_path,
+        obj,
+        sched,
+        select="random",
+        chunk_ns=0.1,
+        ns_cap=0.25,
+        seed=1,
+        progress=lambda _m: None,
+        run_chunk_fn=_fake_chunk(calls),
+    )
+    assert ok
+    assert set(traces) == {"w000", "w001"}
+    assert "w002" not in calls
