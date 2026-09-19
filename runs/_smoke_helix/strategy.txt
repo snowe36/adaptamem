@@ -1,0 +1,18 @@
+STRATEGY
+physics     same_physics
+sampling    adaptive
+fidelity    atomistic
+cheaper timestep
+  - HMR 4 fs if validation holds
+  - hardware/precision bench on this box
+fewer timesteps
+  - equilibration scorecard (stop when ready, not at 50 ns)
+  - pilot → state/CV discovery
+  - branch uncertain states, drop redundant walkers
+  - stop when U(objective) < precision
+fewer expensive atoms
+  - geometry box ~8.28 nm lateral, ~61662 atoms
+  - water pad from protein extent, not a cubic CHARMM-GUI default
+why
+  - CVs not assumed known
+  - same CHARMM36-AA ensemble as a conventional 100 ns baseline
