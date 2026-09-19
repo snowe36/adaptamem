@@ -1,5 +1,12 @@
 from adaptamem.errors import RefuseError
-from adaptamem.lipids import integer_counts, leaflet_picks, plan_mix
+from adaptamem.lipids import (
+    integer_counts,
+    leaflet_picks,
+    place_popg_unique,
+    plan_mix,
+    popg_drop_names,
+    popg_unique_heavies,
+)
 
 
 def test_pope_popg_mix_is_same_physics():
@@ -54,3 +61,15 @@ def test_leaflet_picks_balanced():
     assert len(u) + len(lo) == 10
     u2, lo2 = leaflet_picks(20, 20, 10, seed=1)
     assert u == u2 and lo == lo2
+
+
+def test_popg_template_is_charmm36_complete():
+    drop = popg_drop_names()
+    unique = popg_unique_heavies()
+    assert "N" in drop and "H12B" in drop
+    assert unique == ["C13", "OC2", "OC3"]
+    placed = place_popg_unique((0.0, 0.0, 0.0), (0.15, 0.0, 0.0), (0.0, 0.0, 0.4))
+    assert "C13" in placed and "HO2" in placed
+    c13 = placed["C13"]
+    dist = ((c13[0] - 0.15) ** 2 + c13[1] ** 2 + c13[2] ** 2) ** 0.5
+    assert 0.12 < dist < 0.20

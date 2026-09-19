@@ -36,6 +36,12 @@ class Membrane:
 
 
 @dataclass
+class ComputeBudget:
+    max_gpu_hours: float | None = None
+    max_wall_hours: float | None = None
+
+
+@dataclass
 class Orientation:
     method: str = "auto"
     topology: str = "in"
@@ -49,6 +55,8 @@ class System:
     membrane: Membrane
     objective: Objective
     source: Path | None = None
+    compute: ComputeBudget = field(default_factory=ComputeBudget)
+    seed: int = 42
 
     @property
     def adaptive(self) -> bool:
@@ -68,10 +76,15 @@ class Protocol:
     eq_free_membrane_ns: float
     eq_stop_on_qc: bool
     save_interval_ps: float
+    checkpoint_interval_ns: float
+    checkpoint_keep_last: int
     platform_preference: list[str]
     bench_steps: int
     force_field: str
     water: str
+    pme: bool
+    precision: str
+    compute: ComputeBudget
     raw: dict[str, Any]
 
 
@@ -81,6 +94,8 @@ def load_protocol(path: Path | None = None) -> Protocol:
     eq = raw.get("equilibration") or {}
     traj = raw.get("trajectory") or {}
     bench = raw.get("bench") or {}
+    ckpt = raw.get("checkpoint") or {}
+    comp = raw.get("compute") or {}
     prefs = raw.get("platform_preference") or ["CUDA", "OpenCL", "CPU"]
     return Protocol(
         timestep_fs=float(raw["timestep_fs"]),
@@ -94,11 +109,30 @@ def load_protocol(path: Path | None = None) -> Protocol:
         eq_free_membrane_ns=float(eq.get("free_membrane_ns", 2.0)),
         eq_stop_on_qc=bool(eq.get("stop_on_membrane_qc", True)),
         save_interval_ps=float(traj.get("save_interval_ps", 100)),
+        checkpoint_interval_ns=float(ckpt.get("interval_ns", 5)),
+        checkpoint_keep_last=int(ckpt.get("keep_last", 3)),
         platform_preference=[str(x) for x in prefs],
         bench_steps=int(bench.get("steps", 20000)),
         force_field=str(raw.get("force_field", "CHARMM36")),
         water=str(raw.get("water", "TIP3P")),
+        pme=bool(raw.get("pme", True)),
+        precision=str(raw.get("precision", "mixed")),
+        compute=_compute(comp),
         raw=raw,
+    )
+
+
+def _compute(spec: Any) -> ComputeBudget:
+    if not isinstance(spec, dict):
+        return ComputeBudget()
+    def _opt(v: Any) -> float | None:
+        if v is None or v == "":
+            return None
+        return float(v)
+
+    return ComputeBudget(
+        max_gpu_hours=_opt(spec.get("max_gpu_hours")),
+        max_wall_hours=_opt(spec.get("max_wall_hours")),
     )
 
 
@@ -146,4 +180,6 @@ def load_system(path: Path) -> System:
         ),
         objective=parse_objective(obj_raw),
         source=path,
+        compute=_compute(raw.get("compute") or {}),
+        seed=int(raw.get("seed", 42)),
     )

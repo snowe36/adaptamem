@@ -92,9 +92,9 @@ def choose(
         sampling = "adaptive"
         fewer_steps.extend(
             [
-                "pilot → state/CV discovery",
-                "branch uncertain states, drop redundant walkers",
-                "stop when U(objective) < precision",
+                "pilot → landscape, then spend GPU-hours where uncertainty × uniqueness says so",
+                "branch unique uncertain states; stop redundant tight-CI walkers",
+                "stop when U(objective)/GPU-hour and coverage both clear the bar",
             ]
         )
         if objective.discover_cvs:

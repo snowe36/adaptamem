@@ -42,7 +42,7 @@ def find_immers(immers_dir: Path | None = None) -> Path | None:
 def require_immers(immers_dir: Path | None = None) -> Path:
     bin_path = find_immers(immers_dir)
     if bin_path is None:
-        raise RefuseError(f"orientation.method=ppm but immers was not found. {INSTALL}")
+        raise RefuseError(f"orientation.method=ppm but immers was not found. {INSTALL}", code="PPM_MISSING")
     return bin_path
 
 

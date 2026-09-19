@@ -28,3 +28,8 @@ checkpoint:
 bench:
   steps: 20000
   reporters: false
+
+# Default campaign spend. System YAML compute: overrides this. --ns is a hard cap.
+compute:
+  max_gpu_hours: 24
+  max_wall_hours: 24

@@ -77,4 +77,6 @@ Phase order: trustworthy PDB→MD (tier 1) → adaptive sampler proved against a
 - **Two clocks.** Campaign wall-clock ≠ replica ns/day.
 - **Do not saturate-batch** a 600k-atom complex; batching is for small walkers.
 
-Implemented now: doctor, geometry box, strategy, TM-axis orient, optional local PPM, compact OpenMM addMembrane, POPE:POPG swap, CHARMM36 HMR 4 fs, eq scorecard, ns/day bench, walker scheduler, hybrid plan (annular lipids stay AA). Martini execution is not built.
+Implemented now: doctor, geometry box, strategy, TM-axis orient, optional local PPM, compact OpenMM addMembrane, CHARMM36-complete POPE:POPG swap, CHARMM36 HMR 4 fs, eq scorecard, rich `bench.json` + atom-count ladder, production streaming CVs, campaign IDs, iterative sample loop (uncertainty × coverage), held-out oracle + equal-compute / equal-precision compare. Martini execution is not built.
+
+Layers: **physics** (is it valid?) → **performance** (`bench`) → **inference** (`sample`) → **decision** (`select` / `REFUSE`).

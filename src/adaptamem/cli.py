@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
 
 from adaptamem.assemble import assemble, default_workdir, format_assemble
 from adaptamem.box import format_box
+from adaptamem.campaign import reproduce_report
 from adaptamem.doctor import audit, format_report
 from adaptamem.errors import RefuseError
 from adaptamem.orient import format_orient
-from adaptamem.schema import default_system_template_path, load_system
+from adaptamem.schema import default_system_template_path, load_protocol, load_system
 from adaptamem.session import load_session
 from adaptamem.strategy import format_strategy
 
@@ -46,9 +48,20 @@ def main(argv: list[str] | None = None) -> int:
     p_eq.add_argument("workdir", type=Path)
     p_eq.add_argument("--short", action="store_true", help="Minimize + 100 steps (tests / smoke)")
 
-    p_bench = sub.add_parser("bench", help="ns/day of the assembled system")
+    p_bench = sub.add_parser("bench", help="Throughput of the assembled system (not science)")
     p_bench.add_argument("workdir", type=Path)
     p_bench.add_argument("--steps", type=int, default=None)
+    p_bench.add_argument(
+        "--ladder",
+        action="store_true",
+        help="Append this workdir as one ns/day(N) point to ladder.json",
+    )
+
+    p_prod = sub.add_parser("produce", help="Production MD; streaming CVs, XTC secondary")
+    p_prod.add_argument("workdir", type=Path)
+    p_prod.add_argument("--ns", type=float, default=None, help="Hard cap on simulated ns")
+    p_prod.add_argument("--budget-hours", type=float, default=None)
+    p_prod.add_argument("--force", action="store_true", help="Ignore membrane QC refuse")
 
     p_run = sub.add_parser("run", help="Plan + assemble + equilibrate")
     _job_args(p_run)
@@ -56,16 +69,52 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--force", action="store_true")
     p_run.add_argument("--short", action="store_true")
     p_run.add_argument("--bench", action="store_true")
+    p_run.add_argument("--produce", action="store_true")
+    p_run.add_argument("--ns", type=float, default=None)
 
-    p_sample = sub.add_parser("sample", help="Walker schedule (YAML CVs; n_walkers is an output)")
+    p_sample = sub.add_parser(
+        "sample",
+        help="Adaptive loop: initialize→pilot→chunk→analyze→select→branch→stop",
+    )
     _job_args(p_sample)
     p_sample.add_argument("--out", type=Path, default=None)
-    p_sample.add_argument("--traces", type=Path, default=None, help="JSON map of observable → values")
+    p_sample.add_argument("--traces", type=Path, default=None, help="JSON observable series")
+    p_sample.add_argument(
+        "--select",
+        default="random",
+        help="random | uncertainty | novelty | information_gain",
+    )
+    p_sample.add_argument("--execute", action="store_true", help="Run OpenMM chunks")
+    p_sample.add_argument("--chunk-ns", type=float, default=None)
+    p_sample.add_argument("--ns", type=float, default=None, help="Cap on executed ns")
 
     p_hyb = sub.add_parser("hybrid", help="AA/CG plan; annular lipids stay AA")
     _job_args(p_hyb)
     p_hyb.add_argument("--out", type=Path, default=None)
     p_hyb.add_argument("--bulk", default="CG", help="CG | AA | implicit")
+
+    p_repro = sub.add_parser("reproduce", help="Replay campaign hashes + protocol")
+    p_repro.add_argument("campaign", help="campaign_id or workdir")
+
+    p_of = sub.add_parser("oracle-freeze", help="Freeze conventional traces as held-out AA oracle")
+    p_of.add_argument("workdir", type=Path)
+    p_of.add_argument("--out", type=Path, default=None)
+
+    p_os = sub.add_parser("oracle-score", help="Score estimates against a frozen oracle")
+    p_os.add_argument("estimate", type=Path, help="JSON with diagnostics or values")
+    p_os.add_argument("--oracle", type=Path, required=True)
+
+    p_cmp = sub.add_parser("compare", help="Equal GPU-hours and equal precision vs oracle")
+    p_cmp.add_argument("--oracle", type=Path, required=True)
+    p_cmp.add_argument(
+        "--method",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="Repeatable. NAME is single_long | independent_replicas | adaptive | random_branch",
+    )
+    p_cmp.add_argument("--out", type=Path, default=None)
+    p_cmp.add_argument("--demo", action="store_true", help="Synthetic fixture (tests / docs)")
 
     args = parser.parse_args(argv)
     try:
@@ -82,15 +131,25 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "equilibrate":
             return _equilibrate(args.workdir, args.short)
         if args.cmd == "bench":
-            return _bench(args.workdir, args.steps)
+            return _bench(args.workdir, args.steps, args.ladder)
+        if args.cmd == "produce":
+            return _produce(args)
         if args.cmd == "run":
             return _run(args)
         if args.cmd == "sample":
             return _sample(args)
         if args.cmd == "hybrid":
             return _hybrid(args)
+        if args.cmd == "reproduce":
+            return _reproduce(args.campaign)
+        if args.cmd == "oracle-freeze":
+            return _oracle_freeze(args.workdir, args.out)
+        if args.cmd == "oracle-score":
+            return _oracle_score(args.estimate, args.oracle)
+        if args.cmd == "compare":
+            return _compare(args)
     except RefuseError as exc:
-        print(f"REFUSE  {exc.message}", file=sys.stderr)
+        print(exc.format(), file=sys.stderr)
         return 2
     parser.error(f"unknown command {args.cmd}")
     return 2
@@ -131,6 +190,8 @@ def _plan(path: Path, cli_objective: str | None, budget_hours: float | None = No
     print()
     print("EXPERIMENT")
     print(f"objective     {session.objective.type}")
+    if session.budget_hours is not None:
+        print(f"budget        {session.budget_hours:g} GPU-h")
     if session.objective.observables:
         for o in session.objective.observables:
             prec = f"  precision={o.precision}" if o.precision is not None else ""
@@ -170,10 +231,39 @@ def _equilibrate(workdir: Path, short: bool) -> int:
     return 0 if result.qc.ok or short else 1
 
 
-def _bench(workdir: Path, steps: int | None) -> int:
-    from adaptamem.bench import bench, format_bench
+def _bench(workdir: Path, steps: int | None, ladder: bool) -> int:
+    from adaptamem.bench import bench, format_bench, write_ladder
 
-    print(format_bench(bench(workdir, steps=steps)))
+    r = bench(workdir, steps=steps)
+    print(format_bench(r))
+    if ladder:
+        row = {
+            "n_atoms": r.n_atoms,
+            "ns_per_day": r.ns_per_day,
+            "gpu": (r.payload.get("hardware") or {}).get("gpu"),
+            "workdir": str(workdir),
+        }
+        path = Path(workdir) / "ladder.json"
+        existing: list = []
+        if path.is_file():
+            existing = list((json.loads(path.read_text()).get("points")) or [])
+        existing.append(row)
+        write_ladder(existing, path)
+        print(f"ladder    {path}")
+    return 0
+
+
+def _produce(args: argparse.Namespace) -> int:
+    from adaptamem.produce import format_produce, produce
+
+    r = produce(
+        args.workdir,
+        ns=args.ns,
+        budget_hours=args.budget_hours,
+        force=args.force,
+        progress=_progress,
+    )
+    print(format_produce(r))
     return 0
 
 
@@ -202,13 +292,26 @@ def _run(args: argparse.Namespace) -> int:
 
         print()
         print(format_bench(bench(workdir)))
+    if args.produce:
+        from adaptamem.produce import format_produce, produce
+
+        print()
+        print(
+            format_produce(
+                produce(
+                    workdir,
+                    ns=args.ns,
+                    budget_hours=args.budget_hours,
+                    force=args.force or args.short,
+                    progress=_progress,
+                )
+            )
+        )
     return 0 if eq.qc.ok or args.short else 1
 
 
 def _sample(args: argparse.Namespace) -> int:
-    import json
-
-    from adaptamem.sample import format_schedule, schedule, write_schedule
+    from adaptamem.sample import format_sample, sample
 
     session = load_session(
         args.input, cli_objective=args.objective, budget_hours=args.budget_hours
@@ -216,13 +319,21 @@ def _sample(args: argparse.Namespace) -> int:
     traces = None
     if args.traces is not None:
         traces = json.loads(Path(args.traces).read_text())
-    sched = schedule(
-        session.objective, session.box, budget_hours=args.budget_hours, traces=traces
-    )
     workdir = default_workdir(session, args.out)
-    write_schedule(sched, workdir, extra={"objective": session.objective.type})
-    print(format_schedule(sched))
-    print(f"wrote {workdir / 'sample.json'}")
+    result = sample(
+        session.objective,
+        session.box,
+        workdir,
+        budget_hours=args.budget_hours if args.budget_hours is not None else session.budget_hours,
+        traces=traces,
+        select=args.select,
+        execute=args.execute,
+        chunk_ns=args.chunk_ns,
+        ns_cap=args.ns,
+        seed=session.system.seed,
+        progress=_progress,
+    )
+    print(format_sample(result))
     return 0
 
 
@@ -240,6 +351,63 @@ def _hybrid(args: argparse.Namespace) -> int:
     return 0 if plan.ok else 2
 
 
+def _reproduce(target: str) -> int:
+    print(reproduce_report(target, protocol=load_protocol()))
+    return 0
+
+
+def _oracle_freeze(workdir: Path, out: Path | None) -> int:
+    from adaptamem.oracle import freeze_workdir
+
+    oracle = freeze_workdir(workdir, out=out)
+    print(f"ORACLE  froze { {k: len(v) for k, v in oracle.values.items()} }")
+    print(oracle.path)
+    return 0
+
+
+def _oracle_score(estimate: Path, oracle_path: Path) -> int:
+    from adaptamem.oracle import format_score, load_oracle, score
+
+    oracle = load_oracle(oracle_path)
+    data = json.loads(Path(estimate).read_text())
+    est = data.get("diagnostics") or data.get("observables") or data
+    print(format_score(score(est, oracle)))
+    return 0
+
+
+def _compare(args: argparse.Namespace) -> int:
+    from adaptamem.compare import (
+        compare,
+        format_compare,
+        load_method,
+        synthetic_demo,
+        write_compare,
+    )
+    from adaptamem.oracle import load_oracle
+
+    if args.demo:
+        oracle, runs = synthetic_demo()
+    else:
+        oracle = load_oracle(args.oracle)
+        runs = []
+        for item in args.method:
+            if "=" not in item:
+                raise RefuseError("--method needs NAME=PATH", code="NOT_READY")
+            name, path = item.split("=", 1)
+            runs.append(load_method(Path(path), name=name))
+        if len(runs) < 2:
+            raise RefuseError("compare needs at least two --method NAME=PATH", code="NOT_READY")
+    payload = compare(oracle, runs)
+    print(format_compare(payload))
+    dest = args.out
+    if dest is None and not args.demo:
+        dest = Path("compare.json")
+    if dest is not None:
+        write_compare(payload, dest)
+        print(f"wrote {dest}")
+    return 0
+
+
 def _validate(system_path: Path) -> int:
     system = load_system(system_path)
     lipids = " ".join(f"{k}:{v:g}" for k, v in system.membrane.lipids.items())
@@ -250,6 +418,7 @@ def _validate(system_path: Path) -> int:
     print(f"obs        {len(system.objective.observables)}")
     print(f"lipids     {lipids}")
     print(f"size       optimize={system.membrane.optimize_size}")
+    print(f"budget     gpu-h={system.compute.max_gpu_hours} wall-h={system.compute.max_wall_hours}")
     return 0
 
 

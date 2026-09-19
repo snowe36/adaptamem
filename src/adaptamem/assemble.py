@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from adaptamem.box import format_box
+from adaptamem.campaign import stamp, write_campaign
 from adaptamem.doctor import format_report
 from adaptamem.errors import RefuseError
 from adaptamem.lipids import apply_pope_popg_swap, plan_mix
@@ -140,6 +141,11 @@ def assemble(
     if mix.n_swap and mix.swap_to == "POPG":
         log(f"swap {mix.n_swap} lipids to POPG")
         swap_info = apply_pope_popg_swap(modeller, mix.n_swap)
+        try:
+            modeller.addHydrogens(ff)
+            notes.append("addHydrogens after POPG swap")
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"addHydrogens after swap skipped: {exc}")
         notes.append(
             f"swapped {swap_info.get('n_swapped', 0)} → POPG "
             f"(upper {swap_info.get('n_upper', 0)}, lower {swap_info.get('n_lower', 0)})"
@@ -147,7 +153,21 @@ def assemble(
         physics = mix.physics
 
     log("createSystem HMR + membrane barostat")
-    omm = make_hmr_system(modeller.topology, proto)
+    try:
+        omm = make_hmr_system(modeller.topology, proto)
+    except Exception as exc:  # noqa: BLE001
+        raise RefuseError(
+            f"CHARMM36 createSystem failed after lipid mix: {exc}",
+            code="NOT_READY",
+        ) from exc
+    if mix.n_swap:
+        log("clash relief minimize after POPG swap")
+        try:
+            modeller = _clash_relief(modeller, omm, plat, proto)
+            omm = make_hmr_system(modeller.topology, proto)
+            notes.append("POPG clash relief minimize")
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"clash relief skipped: {exc}")
     assembled = workdir / "assembled.pdb"
     with assembled.open("w") as fh:
         PDBFile.writeFile(modeller.topology, modeller.positions, fh, keepIds=True)
@@ -189,6 +209,7 @@ def assemble(
         "cutoff_nm": proto.nonbonded_cutoff_nm,
         "ionic_strength_M": ionic,
         "force": force,
+        "seed": session.system.seed,
         "notes": notes,
         "orient": {
             "method": oriented.method,
@@ -196,8 +217,34 @@ def assemble(
             "axis_before": list(oriented.axis_before),
             "span_nm": list(oriented.span_nm),
         },
+        "objective": {
+            "type": session.objective.type,
+            "discover_cvs": session.objective.discover_cvs,
+            "observables": [
+                {
+                    "name": o.name,
+                    "kind": o.kind,
+                    "selection": o.selection,
+                    "precision": o.precision,
+                }
+                for o in session.objective.observables
+            ],
+        },
+        "compute": {
+            "max_gpu_hours": session.budget_hours,
+            "max_wall_hours": session.system.compute.max_wall_hours,
+        },
     }
+    camp = stamp(
+        structure=session.system.structure,
+        protocol=proto,
+        gpu=plat_name,
+        seed=session.system.seed,
+        extra={"system": session.system.name, "stage": "assemble", "n_atoms": n_atoms},
+    )
+    payload["campaign"] = camp
     (workdir / "assemble.json").write_text(json.dumps(payload, indent=2) + "\n")
+    write_campaign(workdir, camp)
     return AssembleResult(
         workdir=workdir,
         oriented=oriented.path,
@@ -295,3 +342,19 @@ def _add_membrane(modeller: Any, ff: Any, platform: Any, lipid: str, pad_nm: flo
         modeller.addMembrane(ff, platform=platform, **kwargs)
     except TypeError:
         modeller.addMembrane(ff, **kwargs)
+
+
+def _clash_relief(modeller: Any, system: Any, platform: Any, proto: Protocol) -> Any:
+    from openmm.app import Simulation
+
+    from adaptamem.sim import langevin
+
+    sim = Simulation(modeller.topology, system, langevin(proto, timestep_fs=1.0), platform)
+    sim.context.setPositions(modeller.positions)
+    box = modeller.topology.getPeriodicBoxVectors()
+    if box is not None:
+        sim.context.setPeriodicBoxVectors(*box)
+    sim.minimizeEnergy(maxIterations=200)
+    pos = sim.context.getState(getPositions=True).getPositions()
+    modeller.positions = pos
+    return modeller

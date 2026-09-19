@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from adaptamem.errors import RefuseError
+from adaptamem.errors import MISSING_ENGINE, RefuseError
 from adaptamem.schema import Protocol
 
 OPENMM_LIPIDS = ("POPC", "POPE", "DLPC", "DLPE", "DMPC", "DOPC", "DPPC")
@@ -25,6 +25,7 @@ LIPID_RESIDUES = {
     "DMPC",
     "DMP",
 }
+WATER_RESIDUES = {"HOH", "WAT", "TIP3", "TIP", "SOL", "H2O"}
 MISSING_OPENMM = "OpenMM is not installed. pip install 'adaptamem[sim]'"
 
 
@@ -38,7 +39,7 @@ def openmm_available() -> bool:
 
 def require_openmm() -> None:
     if not openmm_available():
-        raise RefuseError(MISSING_OPENMM)
+        raise RefuseError(MISSING_OPENMM, code=MISSING_ENGINE)
 
 
 def openmm_lipid_type(lipids: dict[str, float]) -> tuple[str, str | None]:
@@ -75,7 +76,29 @@ def pick_platform(preference: list[str] | None = None) -> tuple[Any, str]:
             return plat, name
         except Exception as exc:  # noqa: BLE001
             last = exc
-    raise RefuseError(f"no OpenMM platform from {order}: {last}")
+    raise RefuseError(f"no OpenMM platform from {order}: {last}", code=MISSING_ENGINE)
+
+
+def hardware_label(platform: Any, platform_name: str) -> str:
+    if platform_name == "CUDA":
+        for key in ("DeviceName", "CudaDeviceName"):
+            try:
+                return str(platform.getPropertyDefaultValue(key))
+            except Exception:  # noqa: BLE001
+                pass
+        return "CUDA"
+    if platform_name == "OpenCL":
+        for key in ("DeviceName", "OpenCLDeviceName"):
+            try:
+                return str(platform.getPropertyDefaultValue(key))
+            except Exception:  # noqa: BLE001
+                pass
+        return "OpenCL"
+    return platform_name
+
+
+def count_residues(topology: Any, names: set[str]) -> int:
+    return sum(1 for r in topology.residues() if r.name in names)
 
 
 def make_hmr_system(topology: Any, protocol: Protocol) -> Any:

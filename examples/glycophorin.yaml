@@ -1,0 +1,32 @@
+name: glycophorin_1afo
+structure: data/structures/1AFO.pdb
+notes: >
+  Public demo protein (not AftD/TmaT). Glycophorin A TM dimer, PDB 1AFO.
+  Fetch with scripts/fetch_pdb.sh 1AFO. Held-out conventional AA is the oracle;
+  adaptive sampling is scored against that distribution.
+
+objective:
+  type: conformational_shift
+  observables:
+    - name: g83_sep
+      kind: distance
+      selection: "chain A and resid 83 and name CA ; chain B and resid 83 and name CA"
+      precision: 0.05
+
+orientation:
+  method: auto
+  topology: in
+
+membrane:
+  lipids:
+    POPC: 1.0
+  optimize_size: true
+  safety_margin_nm: 1.2
+  water_pad_nm: 1.2
+  ionic_strength_M: 0.15
+
+compute:
+  max_gpu_hours: 20
+  max_wall_hours: 12
+
+seed: 42

@@ -5,7 +5,7 @@ from adaptamem.doctor import DoctorReport, audit
 from adaptamem.hybrid import HybridPlan, plan_hybrid
 from adaptamem.objective import Objective, parse_objective
 from adaptamem.orient import OrientResult, orient_structure
-from adaptamem.sample import WalkerSchedule, schedule
+from adaptamem.sample import WalkerSchedule, sample, schedule
 from adaptamem.schema import Protocol, System, load_protocol, load_system
 from adaptamem.session import Session, load_session
 from adaptamem.strategy import Strategy, choose
@@ -29,6 +29,7 @@ __all__ = [
     "orient_structure",
     "parse_objective",
     "plan_hybrid",
+    "sample",
     "schedule",
     "plan_box",
 ]

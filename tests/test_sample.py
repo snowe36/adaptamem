@@ -37,7 +37,7 @@ def test_mean_ci_and_stop():
     assert not stopped([0.0, 10.0], precision=0.1)
 
 
-def test_traces_drop_converged_observable(tmp_path: Path):
+def test_traces_inform_schedule_notes(tmp_path: Path):
     rep = audit(helix_pdb(tmp_path / "leu.pdb"))
     box = plan_box(rep)
     obj = parse_objective(
@@ -49,7 +49,9 @@ def test_traces_drop_converged_observable(tmp_path: Path):
         }
     )
     s = schedule(obj, box, traces={"rmsd": [1.0, 1.01, 0.99, 1.0]})
-    assert "inside precision" in " ".join(s.notes)
+    blob = " ".join(s.notes)
+    assert "uncertainty=" in blob
+    assert "uniqueness=" in blob
 
 
 def test_tiny_budget_refuses(tmp_path: Path):
@@ -58,7 +60,7 @@ def test_tiny_budget_refuses(tmp_path: Path):
     try:
         schedule(parse_objective({"type": "discover_states"}), box, budget_hours=0.01)
     except RefuseError as exc:
-        assert "budget" in exc.message.lower()
+        assert "budget" in exc.message.lower() or exc.code == "BUDGET"
         return
     raise AssertionError("expected RefuseError")
 

@@ -1,0 +1,18 @@
+{
+  "residue": "POPG",
+  "forcefield": "CHARMM36",
+  "note": "Unique POPG headgroup vs POPE. Shared tails/phosphate/glycerol keep parent coordinates. Local frame: origin C12, e1=C12-C11, e3 from P.",
+  "drop_from_pope": ["N", "HN1", "HN2", "HN3", "H12B"],
+  "unique_heavies": ["C13", "OC2", "OC3"],
+  "unique_hydrogens": ["H13A", "H13B", "HO2", "HO3"],
+  "frame": ["C11", "C12", "P"],
+  "local_nm": {
+    "C13": [0.051, 0.144, 0.0],
+    "OC2": [0.048, -0.067, 0.117],
+    "OC3": [0.099, 0.249, 0.082],
+    "H13A": [0.012, 0.178, -0.089],
+    "H13B": [0.012, 0.178, 0.089],
+    "HO2": [0.132, -0.067, 0.117],
+    "HO3": [0.183, 0.249, 0.082]
+  }
+}

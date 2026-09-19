@@ -16,6 +16,8 @@ def test_default_protocol_eq_matches_production():
     assert p.timestep_fs == 4.0
     assert p.eq_timestep_fs == 4.0
     assert p.hydrogen_mass_amu == 4.0
+    assert p.checkpoint_interval_ns == 5
+    assert p.compute.max_gpu_hours == 24
 
 
 def test_example_recipes_load():
@@ -25,6 +27,17 @@ def test_example_recipes_load():
     assert dltb.membrane.optimize_size
     b2ar = load_system(ROOT / "examples" / "b2ar.yaml")
     assert b2ar.objective.type == "conformational_shift"
+    gpa = load_system(ROOT / "examples" / "glycophorin.yaml")
+    assert gpa.compute.max_gpu_hours == 20
+    assert gpa.objective.observables[0].kind == "distance"
+
+
+def test_refuse_format():
+    from adaptamem.errors import RefuseError
+
+    text = RefuseError("not enough GPU-hours", code="BUDGET").format()
+    assert text.startswith("REFUSE  BUDGET")
+    assert "GPU-hours" in text
 
 
 def test_objective_requires_observables_or_discovery():

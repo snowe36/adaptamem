@@ -34,9 +34,13 @@ Three axes, never mixed in a benchmark:
 4. **Orient** the TM axis to z (`auto`, or local PPM 3.0 `immers` when requested)
 5. **Assemble** CHARMM36 + compact OpenMM `addMembrane` (mixed POPE:POPG by swap)
 6. **Equilibrate** at 4 fs and stop on a membrane QC scorecard
-7. **Sample** with scheduler-output walker counts, or plan a hybrid membrane that keeps annular lipids AA
+7. **Bench** throughput (`ns/day`, steps/s, atom count, GPU, physics) — not science
+8. **Produce** production MD with streaming observables (XTC is compatibility)
+9. **Sample** iteratively (`initialize → pilot → chunk → analyze → select → branch → stop`) against a held-out AA oracle
 
 Walker count and nanoseconds are scheduler **outputs**. Design: [docs/architecture.md](docs/architecture.md).
+
+Layers stay separate: physics validity, performance (`bench`), inference (`sample`), decision (`select` / `REFUSE`).
 
 ---
 
@@ -48,6 +52,8 @@ Walker count and nanoseconds are scheduler **outputs**. Design: [docs/architectu
 | CPU path (CI) | `doctor` + `plan` + unit tests; **OpenMM is not installed on CI** |
 | Helix fixture (`tests/fixtures/helix.pdb`) | 40 LEU; doctor finds **≥1** TM span |
 | OpenMM extra | optional `[sim]`; assemble/eq/bench skipped in CI |
+| Public demo protein | Glycophorin A (PDB 1AFO), not AftD/TmaT |
+| GPU stock (this session) | Secure RTX 4090 **HIGH** in EU-RO-1 at **$0.74/hr**; community 4090 **NONE**. Helix `assemble` reached **35607** atoms; short eq NaN — **no ns/day quoted** |
 
 A local OpenCL bench of one assembled helix is not a product result and is not quoted here.
 
@@ -102,7 +108,7 @@ Recipes in [`examples/`](examples/) are optional hints, not the engine.
 
 ## Metric
 
-Information per GPU-hour, **inside one physics class**. A hybrid membrane that runs faster is not “higher ns/day.”
+**Uncertainty per GPU-hour** (`CI width / GPU-hours`), inside one physics class, scored against a held-out AA oracle. `bench` is throughput only. A hybrid membrane that runs faster is not “higher ns/day.”
 
 ---
 
@@ -112,9 +118,10 @@ Information per GPU-hour, **inside one physics class**. A hybrid membrane that r
 - `auto` orientation is not PPM; `method: ppm` refuses unless a local `immers` binary is on `ADAPTAMEM_PPM_DIR` or PATH.
 - Mixed membranes: POPE:POPG swap after a POPE `addMembrane`. Other mixes refuse.
 - Charged (POPG) bilayers in a tiny XY box refuse — finite-size electrostatics.
-- Adaptive walkers schedule from YAML observables; they do not invent CVs in Python.
+- Adaptive sampling is an iteration with a pluggable `select`; walker counts are outputs.
 - Hybrid AA/CG is a labeled **approximation** and is not executed as a Martini engine in this version.
 - Apple Silicon OpenCL is not a 4090.
+- Public demo protein is glycophorin A (1AFO), not AftD/TmaT.
 
 ---
 
@@ -131,11 +138,15 @@ Information per GPU-hour, **inside one physics class**. A hybrid membrane that r
 
 | Command | Needs | What it proves |
 |---------|-------|----------------|
-| `make test` / `uv run pytest -q` | `[dev]` | doctor, box, strategy, orient, mix planner, walkers, hybrid policy |
+| `make test` / `uv run pytest -q` | `[dev]` | doctor, box, strategy, mix, diagnostics, sample loop, oracle/compare |
 | `bash scripts/reproduce.sh` | uv or venv | lint + tests + doctor/plan on the helix fixture |
 | `adaptamem assemble --out runs/job` | `[sim]` (OpenMM) | compact bilayer + 4 fs HMR system |
 | `adaptamem equilibrate runs/job` | assembled system | QC scorecard (APL, thickness) |
-| `adaptamem sample runs/job` | eq or plan | walker schedule from the objective |
+| `adaptamem bench runs/job` | assembled system | throughput JSON (not U/GPU-hour) |
+| `adaptamem produce runs/job --ns 1` | eq system | streaming CVs + XTC/checkpoints |
+| `adaptamem sample … --select random` | YAML CVs | iterative loop; `--execute` runs chunks |
+| `adaptamem oracle-freeze` / `compare` | traces + oracle | held-out recovery; equal hours and equal precision |
+| `adaptamem reproduce <id>` | campaign.json | hashes + protocol replay |
 | `adaptamem hybrid protein.pdb` | CPU | hybrid plan; refuses implicit annular lipids |
 
 CI: `.github/workflows/ci.yml` — Python 3.11 and 3.12, `uv sync --extra dev`, ruff, pytest. No OpenMM.

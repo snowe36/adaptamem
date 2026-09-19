@@ -9,7 +9,7 @@ from adaptamem.box import BoxPlan, plan_box
 from adaptamem.doctor import DoctorReport, audit
 from adaptamem.errors import RefuseError
 from adaptamem.objective import Objective, parse_objective
-from adaptamem.schema import Membrane, Orientation, System, load_system
+from adaptamem.schema import Membrane, Orientation, System, load_protocol, load_system
 from adaptamem.strategy import Strategy, choose
 
 
@@ -20,17 +20,18 @@ class Session:
     objective: Objective
     box: BoxPlan
     strategy: Strategy
+    budget_hours: float | None = None
 
     def gate_assemble(self, *, force: bool = False) -> None:
         r = self.strategy.refuse
         if r is None:
             return
         if "transmembrane" in r:
-            raise RefuseError(r)
+            raise RefuseError(r, code="NOT_MEMBRANE")
         if r.startswith("structure not production-ready"):
             if force:
                 return
-            raise RefuseError(r + "  (override with --force)")
+            raise RefuseError(r + "  (override with --force)", code="STRUCTURE")
         # Budget / sampling refuses do not block building the system.
 
     def gate_run(self, *, force: bool = False) -> None:
@@ -41,7 +42,8 @@ class Session:
             return
         if force and "transmembrane" not in r:
             return
-        raise RefuseError(r)
+        code = "NOT_MEMBRANE" if "transmembrane" in r else "BUDGET" if "GPU-h" in r else "STRUCTURE"
+        raise RefuseError(r, code=code)
 
 
 def load_session(
@@ -51,6 +53,7 @@ def load_session(
     budget_hours: float | None = None,
 ) -> Session:
     path = Path(path)
+    proto = load_protocol()
     if path.suffix.lower() in {".yml", ".yaml"}:
         system = load_system(path)
         obj = parse_objective(
@@ -82,14 +85,25 @@ def load_session(
             membrane=Membrane(),
             objective=obj,
             source=None,
+            compute=proto.compute,
         )
         report = audit(path)
+    hours = budget_hours
+    if hours is None:
+        hours = system.compute.max_gpu_hours
+        if hours is None:
+            hours = proto.compute.max_gpu_hours
     box = plan_box(
         report,
         water_pad_nm=system.membrane.water_pad_nm,
         safety_margin_nm=system.membrane.safety_margin_nm,
     )
-    strategy = choose(report, obj, box, budget_gpu_hours=budget_hours)
+    strategy = choose(report, obj, box, budget_gpu_hours=hours)
     return Session(
-        system=system, report=report, objective=obj, box=box, strategy=strategy
+        system=system,
+        report=report,
+        objective=obj,
+        box=box,
+        strategy=strategy,
+        budget_hours=hours,
     )
