@@ -1,11 +1,19 @@
-name: b2ar_3p0g
-structure: data/structures/3P0G.pdb
-notes: Example recipe only. β2AR (PDB 3P0G).
+name: b2ar_2rh1
+structure: ../data/structures/2RH1.pdb
+notes: >
+  Compression target. Inactive β2AR X-ray 2RH1 (chain A) vs active 3SN6 (chain R).
+  CV tm6_ic CA 131–272, ε=0.2 nm. Crystal span 0.70 nm. 3P0G is aborted: nanobody-
+  stabilized TM6 already sits within ε of 3SN6. Seed both basins; do not discover
+  active from inactive-only MD. Teacher shots independent of any 1 μs oracle.
 
 objective:
   type: conformational_shift
-  discover_cvs: true
-  observables: []
+  discover_cvs: false
+  observables:
+    - name: tm6_ic
+      kind: distance
+      selection: "name CA and resid 131 ; name CA and resid 272"
+      precision: 0.2
 
 orientation:
   method: auto
@@ -18,3 +26,9 @@ membrane:
   safety_margin_nm: 1.2
   water_pad_nm: 1.2
   ionic_strength_M: 0.15
+
+compute:
+  max_gpu_hours: 6.9
+  max_wall_hours: 12
+
+seed: 42

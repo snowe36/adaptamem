@@ -4,9 +4,10 @@ import argparse
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
 
-from adaptamem.assemble import assemble, default_workdir, format_assemble
+from adaptamem.assemble import assemble, default_workdir, format_assemble, have_assembled
 from adaptamem.box import format_box
 from adaptamem.campaign import reproduce_report
 from adaptamem.doctor import audit, format_report
@@ -21,8 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="adaptamem",
         description=(
-            "Decide the cheapest membrane-protein simulation that can answer "
-            "the objective, then run the Phase 1 OpenMM path."
+            "GPU teaches. CPU predicts. GPU is called only when CPU does not know."
         ),
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -39,10 +39,57 @@ def main(argv: list[str] | None = None) -> int:
     p_val = sub.add_parser("validate", help="Load a system YAML")
     p_val.add_argument("system", type=Path)
 
-    p_asm = sub.add_parser("assemble", help="Orient + compact OpenMM membrane + 4 fs HMR system")
+    p_asm = sub.add_parser("assemble", help="CPU: orient + membrane (alias of prepare)")
     _job_args(p_asm)
     p_asm.add_argument("--out", type=Path, default=None)
     p_asm.add_argument("--force", action="store_true", help="Override doctor ACTION items")
+
+    p_prep = sub.add_parser("prepare", help="CPU: fetch inputs, orient, assemble")
+    _job_args(p_prep)
+    p_prep.add_argument("--out", type=Path, default=None)
+    p_prep.add_argument("--force", action="store_true", help="Override doctor ACTION items")
+
+    p_feat = sub.add_parser("features", help="CPU: observables / latent features from traces")
+    p_feat.add_argument("input", type=Path, nargs="?", default=None, help="workdir or JSON traces")
+    p_feat.add_argument("--out", type=Path, default=None)
+    p_feat.add_argument(
+        "--crystal",
+        action="append",
+        default=[],
+        metavar="PDB[:CHAIN]",
+        help="Inactive/active X-ray frames. Repeat. Gate aborts if span < ε.",
+    )
+    p_feat.add_argument("--name", default="tm6_ic")
+    p_feat.add_argument(
+        "--selection",
+        default="name CA and resid 131 ; name CA and resid 272",
+    )
+    p_feat.add_argument("--precision", type=float, default=0.2)
+
+    p_comp = sub.add_parser("compress", help="CPU: fit a surrogate from short teacher traces")
+    p_comp.add_argument("traces", type=Path)
+    p_comp.add_argument("--kind", default="msm")
+    p_comp.add_argument("--out", type=Path, required=True)
+    p_comp.add_argument("--lag", type=int, default=1)
+    p_comp.add_argument("--n-bins", type=int, default=8)
+    p_comp.add_argument(
+        "--teacher-gpu-hours",
+        type=float,
+        default=0.0,
+        help="GPU-hours already spent on the teacher (billed, not inferred)",
+    )
+
+    p_inf = sub.add_parser("infer", help="CPU: predict the ensemble from a compressed model")
+    p_inf.add_argument("model", type=Path)
+    p_inf.add_argument("--out", type=Path, required=True)
+    p_inf.add_argument("--n-samples", type=int, default=500)
+    p_inf.add_argument("--seed", type=int, default=0)
+
+    p_or = sub.add_parser("oracle", help="GPU: short trustworthy MD. Explicit. Not a campaign.")
+    p_or.add_argument("workdir", type=Path)
+    p_or.add_argument("--ns", type=float, required=True, help="Teacher length. Keep it tiny.")
+    p_or.add_argument("--budget-hours", type=float, default=None)
+    p_or.add_argument("--force", action="store_true")
 
     p_eq = sub.add_parser("equilibrate", help="Minimize + 4 fs eq with membrane QC")
     p_eq.add_argument("workdir", type=Path)
@@ -71,14 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     p_prod.add_argument("--budget-hours", type=float, default=None)
     p_prod.add_argument("--force", action="store_true", help="Ignore membrane QC refuse")
 
-    p_run = sub.add_parser("run", help="Plan + assemble + equilibrate")
-    _job_args(p_run)
-    p_run.add_argument("--out", type=Path, default=None)
-    p_run.add_argument("--force", action="store_true")
-    p_run.add_argument("--short", action="store_true")
-    p_run.add_argument("--bench", action="store_true")
-    p_run.add_argument("--produce", action="store_true")
-    p_run.add_argument("--ns", type=float, default=None)
+    sub.add_parser("run", help="REFUSE: stages are explicit (prepare|features|compress|infer|oracle|analyze)")
 
     p_sample = sub.add_parser(
         "sample",
@@ -112,17 +152,36 @@ def main(argv: list[str] | None = None) -> int:
     p_os.add_argument("estimate", type=Path, help="JSON with diagnostics or values")
     p_os.add_argument("--oracle", type=Path, required=True)
 
-    p_cmp = sub.add_parser("compare", help="Equal GPU-hours and equal precision vs oracle")
-    p_cmp.add_argument("--oracle", type=Path, required=True)
+    p_an = sub.add_parser(
+        "analyze",
+        help="CPU: compression = MD avoided / GPU oracle spent",
+    )
+    p_an.add_argument("--oracle", type=Path, default=None)
+    p_an.add_argument(
+        "--method",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="Repeatable. NAME is msm | latent_dynamics | single_long | adaptive | ...",
+    )
+    p_an.add_argument("--out", type=Path, default=None)
+    p_an.add_argument("--demo", action="store_true")
+    p_an.add_argument("--error", type=float, default=None, help="ε vs oracle mean")
+    p_an.add_argument("--oracle-gpu-hours", type=float, default=None)
+
+    p_cmp = sub.add_parser("compare", help="alias of analyze")
+    p_cmp.add_argument("--oracle", type=Path, default=None)
     p_cmp.add_argument(
         "--method",
         action="append",
         default=[],
         metavar="NAME=PATH",
-        help="Repeatable. NAME is single_long | independent_replicas | adaptive | random_branch",
+        help="Repeatable. NAME is msm | latent_dynamics | single_long | adaptive | ...",
     )
     p_cmp.add_argument("--out", type=Path, default=None)
     p_cmp.add_argument("--demo", action="store_true", help="Synthetic fixture (tests / docs)")
+    p_cmp.add_argument("--error", type=float, default=None, help="ε vs oracle mean")
+    p_cmp.add_argument("--oracle-gpu-hours", type=float, default=None)
 
     args = parser.parse_args(argv)
     try:
@@ -136,6 +195,16 @@ def main(argv: list[str] | None = None) -> int:
             return _validate(args.system)
         if args.cmd == "assemble":
             return _assemble(args)
+        if args.cmd == "prepare":
+            return _assemble(args)
+        if args.cmd == "features":
+            return _features(args)
+        if args.cmd == "compress":
+            return _compress(args)
+        if args.cmd == "infer":
+            return _infer(args)
+        if args.cmd == "oracle":
+            return _oracle(args)
         if args.cmd == "equilibrate":
             return _equilibrate(args.workdir, args.short)
         if args.cmd == "bench":
@@ -145,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "produce":
             return _produce(args)
         if args.cmd == "run":
-            return _run(args)
+            return _run()
         if args.cmd == "sample":
             return _sample(args)
         if args.cmd == "hybrid":
@@ -156,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
             return _oracle_freeze(args.workdir, args.out)
         if args.cmd == "oracle-score":
             return _oracle_score(args.estimate, args.oracle)
-        if args.cmd == "compare":
+        if args.cmd in {"compare", "analyze"}:
             return _compare(args)
     except RefuseError as exc:
         print(exc.format(), file=sys.stderr)
@@ -230,6 +299,127 @@ def _assemble(args: argparse.Namespace) -> int:
     print(format_orient(result.orient))
     print()
     print(format_assemble(result))
+    print("PREPARE  CPU assembled system; GPU oracle is a later, explicit step")
+    return 0
+
+
+def _features(args: argparse.Namespace) -> int:
+    from adaptamem.features import traces_from_path, traces_from_workdir, write_features
+
+    if args.crystal:
+        from adaptamem.crystal import gate_span, traces_from_crystals
+        from adaptamem.objective import Observable
+
+        obs = [
+            Observable(
+                name=args.name,
+                kind="distance",
+                selection=args.selection,
+                precision=args.precision,
+            )
+        ]
+        traces = traces_from_crystals(list(args.crystal), obs)
+        spans = gate_span(traces, obs)
+        dest = args.out or Path("features.json")
+        write_features(traces, dest)
+        print(f"FEATURES  crystals n={ {k: len(v) for k, v in traces.items()} }")
+        for k, v in traces.items():
+            print(f"  {k}  {[f'{x:.3f}' for x in v]}  span={spans[k]:.3f} nm")
+        print(dest)
+        return 0
+
+    if args.input is None:
+        raise RefuseError("features needs a workdir/JSON or --crystal PDB:CHAIN", code="NOT_READY")
+    src = Path(args.input)
+    traces = traces_from_workdir(src) if src.is_dir() else traces_from_path(src)
+    dest = args.out or (src / "features.json" if src.is_dir() else src.with_name("features.json"))
+    write_features(traces, dest)
+    print(f"FEATURES  { {k: len(v) for k, v in traces.items()} }")
+    for k, v in traces.items():
+        if v:
+            print(f"  {k}  n={len(v)}  last={v[-1]:.4f}")
+    print(dest)
+    return 0
+
+
+def _compress(args: argparse.Namespace) -> int:
+    from adaptamem.compress import compress
+    from adaptamem.features import traces_from_path, traces_from_workdir
+
+    src = Path(args.traces)
+    traces = traces_from_workdir(src) if src.is_dir() else traces_from_path(src)
+    t0 = time.perf_counter()
+    model = compress(
+        args.kind,
+        traces,
+        lag=args.lag,
+        n_bins=args.n_bins,
+        teacher_gpu_hours=args.teacher_gpu_hours,
+    )
+    model["cpu_hours"] = (time.perf_counter() - t0) / 3600.0
+    Path(args.out).write_text(json.dumps(model, indent=2) + "\n")
+    print(f"COMPRESS  {model.get('kind')}  gpu-h={model.get('gpu_hours', 0)}  cpu-h={model['cpu_hours']:.6f}")
+    print(args.out)
+    return 0
+
+
+def _infer(args: argparse.Namespace) -> int:
+    from adaptamem.compress import infer, uncertain_regions
+
+    model = json.loads(Path(args.model).read_text())
+    t0 = time.perf_counter()
+    values = infer(model, n_samples=args.n_samples, seed=args.seed)
+    cpu = (time.perf_counter() - t0) / 3600.0
+    uncertain: dict = {}
+    try:
+        uncertain = uncertain_regions(model)
+    except RefuseError:
+        uncertain = {}
+    payload = {
+        "method": model.get("kind"),
+        "values": values,
+        "gpu_hours": float(model.get("gpu_hours") or 0.0),
+        "cpu_hours": cpu,
+        "uncertain": uncertain,
+        "kind": model.get("kind"),
+    }
+    Path(args.out).write_text(json.dumps(payload, indent=2) + "\n")
+    n_unc = sum(len(v) for v in uncertain.values())
+    print(f"INFER  {payload['method']}  gpu-h={payload['gpu_hours']}  cpu-h={cpu:.6f}  uncertain_bins={n_unc}")
+    if n_unc:
+        from adaptamem.features import write_oracle_request
+
+        obs = model.get("observables") or {}
+        teacher_frames = {
+            k: int((obs.get(k) or {}).get("n_frames") or 0) for k in uncertain
+        }
+        req = write_oracle_request(
+            Path(args.out).with_name("oracle_request.json"),
+            uncertain=uncertain,
+            teacher_frames=teacher_frames,
+        )
+        print(f"  GPU oracle only for those bins → {req}")
+    print(args.out)
+    return 0
+
+
+def _oracle(args: argparse.Namespace) -> int:
+    if not have_assembled(args.workdir) and not (Path(args.workdir) / "eq.pdb").is_file():
+        raise RefuseError(
+            f"no assembled system in {args.workdir}; CPU prepare first, then oracle",
+            code="NOT_READY",
+        )
+    from adaptamem.produce import format_produce, produce
+
+    r = produce(
+        args.workdir,
+        ns=args.ns,
+        budget_hours=args.budget_hours,
+        force=args.force,
+        progress=_progress,
+    )
+    print(format_produce(r))
+    print("ORACLE_DONE")
     return 0
 
 
@@ -309,47 +499,11 @@ def _produce(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run(args: argparse.Namespace) -> int:
-    from adaptamem.equilibrate import equilibrate, format_eq
+def _run() -> int:
+    from adaptamem.pipeline import run_is_not_a_campaign
 
-    session = load_session(
-        args.input, cli_objective=args.objective, budget_hours=args.budget_hours
-    )
-    session.gate_run(force=args.force)
-    print(format_report(session.report))
-    print()
-    print(format_box(session.box))
-    print()
-    print(format_strategy(session.strategy))
-    print()
-    workdir = default_workdir(session, args.out)
-    result = assemble(session, workdir, force=args.force, progress=_progress)
-    print()
-    print(format_assemble(result))
-    print()
-    eq = equilibrate(workdir, short=args.short, progress=_progress)
-    print(format_eq(eq))
-    if args.bench:
-        from adaptamem.bench import bench, format_bench
-
-        print()
-        print(format_bench(bench(workdir)))
-    if args.produce:
-        from adaptamem.produce import format_produce, produce
-
-        print()
-        print(
-            format_produce(
-                produce(
-                    workdir,
-                    ns=args.ns,
-                    budget_hours=args.budget_hours,
-                    force=args.force or args.short,
-                    progress=_progress,
-                )
-            )
-        )
-    return 0 if eq.qc.ok or args.short else 1
+    print(run_is_not_a_campaign(), file=sys.stderr)
+    return 2
 
 
 def _sample(args: argparse.Namespace) -> int:
@@ -430,6 +584,8 @@ def _compare(args: argparse.Namespace) -> int:
     if args.demo:
         oracle, runs = synthetic_demo()
     else:
+        if args.oracle is None:
+            raise RefuseError("analyze needs --oracle PATH or --demo", code="NOT_READY")
         oracle = load_oracle(args.oracle)
         runs = []
         for item in args.method:
@@ -439,7 +595,9 @@ def _compare(args: argparse.Namespace) -> int:
             runs.append(load_method(Path(path), name=name))
         if len(runs) < 2:
             raise RefuseError("compare needs at least two --method NAME=PATH", code="NOT_READY")
-    payload = compare(oracle, runs)
+    payload = compare(
+        oracle, runs, error=args.error, oracle_gpu_hours=args.oracle_gpu_hours
+    )
     print(format_compare(payload))
     dest = args.out
     if dest is None and not args.demo:

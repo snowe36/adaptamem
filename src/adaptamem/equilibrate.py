@@ -62,13 +62,31 @@ def equilibrate(
     platforms = _platform_ladder(proto.platform_preference)
     box = pdb.topology.getPeriodicBoxVectors()
 
-    def _sim(sys_obj: Any, pobj: Any, timestep_fs: float, positions: Any) -> Any:
+    def _sim(
+        sys_obj: Any,
+        pobj: Any,
+        timestep_fs: float,
+        positions: Any,
+        *,
+        precision: str | None = None,
+    ) -> Any:
         integ = langevin(proto, timestep_fs=timestep_fs)
-        sim = Simulation(pdb.topology, sys_obj, integ, pobj)
+        if precision:
+            sim = Simulation(pdb.topology, sys_obj, integ, pobj, {"Precision": precision})
+        else:
+            sim = Simulation(pdb.topology, sys_obj, integ, pobj)
         sim.context.setPositions(positions)
         if box is not None:
             sim.context.setPeriodicBoxVectors(*box)
         return sim
+
+    def _finish(
+        pos: Any, energy: float, temp: float, pobj: Any, pname: str, stage: str
+    ) -> tuple[Any, float, float]:
+        nonlocal plat, plat_name
+        plat, plat_name = pobj, pname
+        stages.append(stage)
+        return pos, float(energy), temp
 
     def _run(label: str, sys_obj: Any, positions: Any, steps: int, minimize: bool) -> tuple[Any, float, float]:
         last: Exception | None = None
@@ -91,11 +109,15 @@ def equilibrate(
             if not ok:
                 raise RefuseError(f"{label} minimize failed: {last}")
 
-        settle = 50 if short else 2000  # 0.05 ps vs 2 ps at 1 fs
         last = None
+        cuda_failed = False
+        pos = min_pos
+        settled = False
         for pname, pobj in platforms:
+            settle = settle_steps(short=short, platform=pname, cuda_failed=cuda_failed)
             try:
-                sim = _sim(sys_obj, pobj, 1.0, min_pos)
+                prec = "double" if pname == "CUDA" else None
+                sim = _sim(sys_obj, pobj, 1.0, min_pos, precision=prec)
                 sim.context.setVelocitiesToTemperature(proto.temperature_K * unit.kelvin)
                 if settle:
                     log(f"{label}: {settle} steps @ 1 fs ({pname})")
@@ -103,27 +125,43 @@ def equilibrate(
                 pos = sim.context.getState(getPositions=True).getPositions()
                 if _has_nan(pos):
                     raise RuntimeError("NaN after 1 fs settle")
-                if steps > 0 and not short:
+                settled = True
+                break
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                log(f"{label} dynamics failed on {pname}: {exc}")
+                if pname != "CPU":
+                    cuda_failed = True
+        if not settled:
+            raise RefuseError(f"{label} failed: {last}")
+
+        if steps > 0 and not short:
+            last = None
+            for pname, pobj in four_fs_platforms(platforms):
+                try:
                     sim4 = _sim(sys_obj, pobj, proto.eq_timestep_fs, pos)
                     sim4.context.setVelocitiesToTemperature(proto.temperature_K * unit.kelvin)
                     log(f"{label}: {steps} steps @ {proto.eq_timestep_fs:g} fs ({pname})")
                     sim4.step(steps)
                     state = sim4.context.getState(getPositions=True, getEnergy=True)
-                else:
-                    state = sim.context.getState(getPositions=True, getEnergy=True)
-                pos = state.getPositions()
-                if _has_nan(pos):
-                    raise RuntimeError("NaN coordinates")
-                e = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
-                t = kinetic_temperature(state, n_atoms, sys_obj)
-                nonlocal plat, plat_name
-                plat, plat_name = pobj, pname
-                stages.append(label)
-                return pos, float(e), t
-            except Exception as exc:  # noqa: BLE001
-                last = exc
-                log(f"{label} dynamics failed on {pname}: {exc}")
-        raise RefuseError(f"{label} failed: {last}")
+                    pos = state.getPositions()
+                    if _has_nan(pos):
+                        raise RuntimeError("NaN coordinates")
+                    e = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+                    t = kinetic_temperature(state, n_atoms, sys_obj)
+                    return _finish(pos, e, t, pobj, pname, label)
+                except Exception as exc:  # noqa: BLE001
+                    last = exc
+                    log(f"{label} 4 fs failed on {pname}: {exc}")
+            raise RefuseError(f"{label} failed: {last}")
+
+        state = sim.context.getState(getPositions=True, getEnergy=True)
+        pos = state.getPositions()
+        if _has_nan(pos):
+            raise RuntimeError("NaN coordinates")
+        e = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+        t = kinetic_temperature(state, n_atoms, sys_obj)
+        return _finish(pos, e, t, pobj, pname, label)
 
     nvt_sys = strip_barostat(system)
     _restrain_ca(nvt_sys, pdb.topology, pdb.positions, k_rest)
@@ -211,6 +249,18 @@ def format_eq(r: EqResult) -> str:
     for n in q.notes:
         lines.append(f"  qc  {n}")
     return "\n".join(lines)
+
+
+def settle_steps(*, short: bool, platform: str, cuda_failed: bool) -> int:
+    """1 fs settle length. CUDA NaN must not dump 2 ps onto CPU."""
+    if short or (platform == "CPU" and cuda_failed):
+        return 50
+    return 2000
+
+
+def four_fs_platforms(platforms: list[tuple[str, Any]]) -> list[tuple[str, Any]]:
+    gpu = [(n, p) for n, p in platforms if n != "CPU"]
+    return gpu or platforms
 
 
 def _steps(time_ns: float, timestep_fs: float) -> int:

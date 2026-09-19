@@ -1,9 +1,10 @@
-name: glycophorin_1afo
-structure: data/structures/1AFO.pdb
+name: glycophorin_5eh4
+structure: ../data/structures/5EH4.pdb
 notes: >
-  Public demo protein (not AftD/TmaT). Glycophorin A TM dimer, PDB 1AFO.
-  Fetch with scripts/fetch_pdb.sh 1AFO. Held-out conventional AA is the oracle;
-  adaptive sampling is scored against that distribution.
+  Negative control. Glycophorin A TM dimer, PDB 5EH4 (X-ray, 2.81 Å), chains A+B.
+  G83 CA–CA is one packed well; 20 ns conventional already pins μ≈0.46 nm. Adaptive
+  select STOP'd. Do not use this as the acceleration benchmark. Next target is
+  examples/b2ar.yaml (slow TM6). Fetch with scripts/fetch_pdb.sh 5EH4.
 
 objective:
   type: conformational_shift

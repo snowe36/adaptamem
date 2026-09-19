@@ -1,0 +1,16 @@
+---
+description: Never leave a Runpod billing unattended. Watch it and terminate on done, fail, crash-loop, or wall clock.
+alwaysApply: true
+---
+
+# Runpod watchdog
+
+GPU pods bill until stop/terminate. After any Runpod create or reuse:
+
+1. Poll container logs on a short loop (2–3 min). Do not wait for the user.
+2. Terminate the pod on `CAMPAIGN_DONE`, `CAMPAIGN_FAIL`, a crash loop (same traceback repeating), GPU idle through a failed assemble/eq, or the campaign wall (`MAX_GPU_HOURS`, currently 4 h).
+3. Do not `sleep` the container to preserve logs. That keeps the meter running.
+4. Do not recreate a pod to fix a crash loop if the same machine can be patched. Stop the loop, then run the job.
+5. NMR ensembles are not campaign structures. Use an X-ray (or EM) PDB; one biological copy only.
+
+`scripts/runpod_watchdog.py --kill` self-deletes when `RUNPOD_API_KEY` is in the pod env. If that print is `WATCHDOG_CANNOT_KILL`, terminate from this session via `pod-action terminate` / `delete-pod`.

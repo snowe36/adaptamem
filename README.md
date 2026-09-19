@@ -1,12 +1,12 @@
 # adaptamem
 
-**The cheapest sufficient membrane-protein simulation is a function of the question and the GPU-hour budget, not a 100 ns CHARMM-GUI default.**
+**MD is the teacher, not the engine.** The cheapest sufficient membrane-protein *answer* is the one that matches a long conventional-MD oracle at a predefined error, using 10–100× fewer GPU-hours — or no production MD at all.
 
-Adaptamem chooses physical resolution, box geometry, and sampling for a membrane-protein objective, then runs a CHARMM36 OpenMM path when that is the cheapest sufficient answer. It is not a GPCR-only pipeline and it is not an AftD/TmaT campaign manager. `ns/day` comparisons are legal only inside one physics class.
+Adaptamem still builds a CHARMM36 OpenMM path so the teacher is trustworthy. It is not a GPCR-only pipeline and it is not an AftD/TmaT campaign manager. `ns/day` is a clock, not science.
 
 [![CI](https://github.com/snowe36/adaptamem/actions/workflows/ci.yml/badge.svg)](https://github.com/snowe36/adaptamem/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
+[![License: MIT](https://img.shields.org/badge/License-MIT-blue.svg)](LICENSE)
+![Python 3.11+](https://img.shields.org/badge/python-3.11%2B-blue.svg)
 
 Repo: [github.com/snowe36/adaptamem](https://github.com/snowe36/adaptamem)
 
@@ -14,33 +14,26 @@ Repo: [github.com/snowe36/adaptamem](https://github.com/snowe36/adaptamem)
 
 ## The problem
 
-A membrane protein PDB plus “run 100 ns” looks like a recipe. The expensive part is usually the wrong box, a 2 fs equilibration pin, and quoting a hybrid membrane’s throughput against full atomistic CHARMM36.
+A membrane protein PDB plus “run 100 ns” is a recipe. Adaptive walker allocation is still that recipe with a stopping rule. The 5EH4 GxxxG campaign proved it: one packed well, `select` STOP, **no acceleration**.
 
-**Given a structure, a scientific objective, and a GPU-hour budget, what is the cheapest simulation that can actually answer the question — and when should the tool refuse?**
+**What information from a tiny amount of trustworthy MD can be exploited to predict the long-time ensemble, transitions, or observable without integrating the missing trajectories?**
 
-Three axes, never mixed in a benchmark:
-
-1. **Cheaper timestep** — same Hamiltonian, less work per step (HMR 4 fs, platform, cutoff).
-2. **Fewer timesteps** — stop, branch, or skip work that does not reduce uncertainty in the objective.
-3. **Fewer expensive atoms** — fewer particles on the atomistic force field (an *approximation* the moment lipids or water leave AA).
+Conventional MD is the oracle. GPU-hours to match that oracle within ε is the score. More MD that stops sooner is a failure mode.
 
 ---
 
 ## What this repo builds
 
-1. **Doctor** the PDB (missing loops, TM spans, clashes) — human veto on ACTION items
-2. **Size** a geometry-minimized bilayer, not a cubic CHARMM-GUI default
-3. **Choose** a strategy on the three axes (`same_physics` | `approximation`) or **REFUSE**
-4. **Orient** the TM axis to z (`auto`, or local PPM 3.0 `immers` when requested)
-5. **Assemble** CHARMM36 + compact OpenMM `addMembrane` (mixed POPE:POPG by swap)
-6. **Equilibrate** at 4 fs and stop on a membrane QC scorecard
-7. **Bench** throughput (`ns/day`, steps/s, atom count, GPU, physics) — not science
-8. **Produce** production MD with streaming observables (XTC is compatibility)
-9. **Sample** iteratively (`initialize → pilot → chunk → analyze → select → branch → stop`) against a held-out AA oracle
+1. **prepare** (CPU) — doctor, orient, assemble
+2. **features** (CPU) — observables / latent representation from teacher traces
+3. **compress** (CPU) — MSM (built); other named plugs REFUSE as controls
+4. **infer** (CPU) — predict the ensemble; list under-sampled bins
+5. **oracle** (GPU, explicit) — short trustworthy MD on a shipped system. Not a campaign.
+6. **analyze** (CPU) — compression = baseline MD avoided / GPU oracle spent
 
-Walker count and nanoseconds are scheduler **outputs**. Design: [docs/architecture.md](docs/architecture.md).
+`adaptamem run` refuses. Adaptive `sample` is a **baseline**, not the goal. Long production MD is what this project is trying to eliminate.
 
-Layers stay separate: physics validity, performance (`bench`), inference (`sample`), decision (`select` / `REFUSE`).
+Design: [docs/architecture.md](docs/architecture.md).
 
 ---
 
@@ -50,12 +43,12 @@ Layers stay separate: physics validity, performance (`bench`), inference (`sampl
 |-------|--------|
 | Inner-loop protocol | **4 fs**, HMR **4 amu**, cutoff **1.0 nm**, CHARMM36/TIP3P, 310 K |
 | CPU path (CI) | `doctor` + `plan` + unit tests; **OpenMM is not installed on CI** |
-| Helix fixture (`tests/fixtures/helix.pdb`) | 40 LEU; doctor finds **≥1** TM span |
-| OpenMM extra | optional `[sim]`; assemble/eq/bench skipped in CI |
-| Public demo protein | Glycophorin A (PDB 1AFO), not AftD/TmaT |
-| GPU bench (pod `i3ha8sl8wymclh`) | Secure RTX 4090, EU-RO-1, **$0.74/hr**. CHARMM36 HMR 4 fs, 31213 atoms: **1052.2 ns/day** CUDA in 1.31 s (`runs/gpu/bench.json`) |
+| Helix fixture (`tests/fixtures/helix.pdb`) | 40 LEU, twisted+centered; doctor finds **≥1** TM span |
+| Primary metric | **compression = baseline MD avoided / GPU oracle spent**. Acceleration = **≥10×** at matched ε, or CPU-only inference that matches. Lower CI is not a claim. No oracle leakage. |
+| Easy-well control (5EH4 G83) | **no acceleration claim.** Clock 1085.7 ns/day, 30 202 atoms, pod `ieh156d6psdtwu`. Oracle μ=0.457 nm. Adaptive STOP'd on low uniqueness. Wrong target. |
+| Compression target | **β2AR** inactive **2RH1** vs active **3SN6** (chain R), TM6 IC CA 131–272 (`tm6_ic`, ε=0.2 nm). Crystal span 0.70 nm. **3P0G aborted** (span vs 3SN6 0.128 nm). |
 
-A local OpenCL bench of one assembled helix is not a product result and is not quoted here.
+Helix **1052.2 ns/day** (pod `i3ha8sl8wymclh`) is a conventional clock, not a protein result.
 
 ---
 
@@ -78,67 +71,70 @@ adaptamem doctor tests/fixtures/helix.pdb
 adaptamem plan  tests/fixtures/helix.pdb --objective discover-states
 ```
 
-Optional physics: `uv sync --extra dev --extra sim` then `adaptamem assemble …` / `run`.
+Optional physics: `uv sync --extra sim` then `adaptamem prepare …`.
 
-GPU throughput on a CUDA box (CPU-minimize, then time CUDA; caches the assembled system so a second run is the timed loop). On Linux GPU hosts install `openmm[cuda12]`, not the CPU-only `openmm` wheel:
+CPU compression loop:
+
+```text
+adaptamem features traces.json --out features.json
+adaptamem compress features.json --kind msm --out model.json
+adaptamem infer model.json --out pred.json
+adaptamem analyze --oracle oracle.json --method msm=pred.json --method single_long=long.json
+```
+
+GPU oracle (ship an assembled system first; not a campaign):
 
 ```bash
-pip install 'openmm[cuda12]' pdbfixer
-python scripts/gpu_job.py --out runs/gpu --steps 4000
-# quote ns/day only from runs/gpu/bench.json
+# on the pod, assembled.pdb + system.xml already present
+export ADAPTAMEM_WORKDIR=runs/oracle ORACLE_NS=10
+bash scripts/runpod_boot.sh
 ```
 
 ---
 
 ## Objective
 
-Named observables if you know the question. `discover_states` if you do not. `comparison` optimizes U(Δ) across systems. `membrane_environment` forbids cheapening first-shell lipids.
+Named observables if you know the slow coordinate. `discover_states` if you do not. Do not pick a CV that 20 ns of conventional MD already pins.
 
 ```yaml
 objective:
-  type: discover_states    # conventional | conformational_shift | discover_states
-                           # comparison | membrane_environment
-  discover_cvs: true
+  type: conformational_shift
   observables:
-    - name: helix_rmsd
-      kind: rmsd
-      selection: "name CA and resid 20-40"
-      precision: 0.5
+    - name: tm6_ic
+      kind: distance
+      selection: "name CA and resid 131 ; name CA and resid 272"
+      precision: 0.2
 ```
 
-```bash
-adaptamem plan protein.pdb --objective membrane-environment --budget-hours 12
-```
-
-Recipes in [`examples/`](examples/) are optional hints, not the engine.
+Recipes in [`examples/`](examples/): `b2ar.yaml` is the compression target; `glycophorin.yaml` is the easy-well negative control.
 
 ---
 
 ## Metric
 
-**Uncertainty per GPU-hour** (`CI width / GPU-hours`), inside one physics class, scored against a held-out AA oracle. `bench` is throughput only. A hybrid membrane that runs faster is not “higher ns/day.”
+**compression = baseline MD compute avoided / GPU oracle spent.**
+
+**speedup = baseline production MD / (CPU inference + oracle).**
+
+Bar: 10× at matched ε, or CPU-only inference that matches. Lower CI is not a claim. `bench` is throughput only.
 
 ---
 
 ## Limitations
 
+- Compression plugs (`msm`, `learned_propagator`, …) **REFUSE** until implemented — they must not fall through to another production run.
 - Cold-start TM detection is Kyte–Doolittle; β-barrels and interfacial helices are missed.
-- `auto` orientation is not PPM; `method: ppm` refuses unless a local `immers` binary is on `ADAPTAMEM_PPM_DIR` or PATH.
-- Mixed membranes: POPE:POPG swap after a POPE `addMembrane`. Other mixes refuse.
-- Charged (POPG) bilayers in a tiny XY box refuse — finite-size electrostatics.
-- Adaptive sampling is an iteration with a pluggable `select`; walker counts are outputs.
-- Hybrid AA/CG is a labeled **approximation** and is not executed as a Martini engine in this version.
+- `auto` orientation is not PPM.
+- Mixed membranes: POPE:POPG swap only.
+- Adaptive `select` is a baseline that failed on 5EH4; do not tune it as the product.
+- Hybrid AA/CG is a labeled **approximation**.
 - Apple Silicon OpenCL is not a 4090.
-- Public demo protein is glycophorin A (1AFO), not AftD/TmaT.
 
 ---
 
 ## Future directions
 
-- Broader lipid mixes (POPC:POPE, cardiolipin) without dropping to 100% majority
-- PPM as default when `immers` is present
-- Paired Δ sampling for `comparison`
-- Executed CG bulk with AA promotion (backmapping + re-eq)
+Proposals (no GPU yet): [docs/compression-proposals.md](docs/compression-proposals.md) — MSM from short shots, latent dynamics + equilibrium generator, uncertainty-gated hybrid. Adaptive `select` is not a candidate.
 
 ---
 
@@ -146,17 +142,13 @@ Recipes in [`examples/`](examples/) are optional hints, not the engine.
 
 | Command | Needs | What it proves |
 |---------|-------|----------------|
-| `make test` / `uv run pytest -q` | `[dev]` | doctor, box, strategy, mix, diagnostics, sample loop, oracle/compare |
+| `make test` / `uv run pytest -q` | `[dev]` | doctor, box, strategy, compare `oracle_compression`, compress REFUSE |
 | `bash scripts/reproduce.sh` | uv or venv | lint + tests + doctor/plan on the helix fixture |
 | `make gpu` / `python scripts/gpu_job.py` | CUDA + `openmm`/`pdbfixer` | CHARMM36 throughput JSON; no repo install |
-| `adaptamem assemble --out runs/job` | `[sim]` (OpenMM) | compact bilayer + 4 fs HMR system |
-| `adaptamem equilibrate runs/job` | assembled system | QC scorecard (APL, thickness) |
-| `adaptamem bench runs/job` | assembled system | throughput JSON (not U/GPU-hour) |
-| `adaptamem produce runs/job --ns 1` | eq system | streaming CVs + XTC/checkpoints |
-| `adaptamem sample … --select random` | YAML CVs | iterative loop; `--execute` runs chunks |
-| `adaptamem oracle-freeze` / `compare` | traces + oracle | held-out recovery; equal hours and equal precision |
+| `adaptamem assemble --out runs/job` | `[sim]` | compact bilayer + 4 fs HMR system |
+| `adaptamem produce runs/job --ns 1` | eq system | teacher traces |
+| `adaptamem compare --oracle … --method …` | traces | GPU-hours to oracle ε |
 | `adaptamem reproduce <id>` | campaign.json | hashes + protocol replay |
-| `adaptamem hybrid protein.pdb` | CPU | hybrid plan; refuses implicit annular lipids |
 
 CI: `.github/workflows/ci.yml` — Python 3.11 and 3.12, `uv sync --extra dev`, ruff, pytest. No OpenMM.
 
@@ -165,21 +157,22 @@ CI: `.github/workflows/ci.yml` — Python 3.11 and 3.12, `uv sync --extra dev`, 
 ## Project layout
 
 ```text
-src/adaptamem/     engine (doctor, strategy, orient, assemble, sample, hybrid)
-src/adaptamem/resources/  protocol.yaml, system.template.yaml
+src/adaptamem/     engine (prepare, features, compress, infer, oracle, analyze)
+src/adaptamem/compress.py  MSM is built; other named plugs REFUSE as controls
 tests/             unit tests (OpenMM skipped if missing)
-tests/fixtures/    helix.pdb
-examples/          optional YAML hints
+examples/          b2ar.yaml (hard CV), glycophorin.yaml (easy-well control)
 docs/architecture.md
-scripts/gpu_job.py standalone CUDA throughput
-scripts/reproduce.sh
+docs/compression-proposals.md  MSM / latent / active-learning; 10× budgets
+scripts/gpu_oracle.py   short MD teacher only; system must already be assembled
+scripts/gpu_campaign.py 5EH4 negative-control baseline; not the boot path
+scripts/runpod_watchdog.py  terminate the pod when the job exits
 ```
 
 ---
 
 ## Acknowledgments
 
-CHARMM36 and OpenMM `addMembrane` are the inner-loop substrate. PPM 3.0 (`immers`) is optional and not vendored.
+CHARMM36 and OpenMM `addMembrane` are the teacher substrate. PPM 3.0 (`immers`) is optional and not vendored.
 
 ---
 

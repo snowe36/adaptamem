@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,6 +22,7 @@ from adaptamem.session import Session
 from adaptamem.strategy import PHYSICS_APPROX, format_strategy
 
 Progress = Callable[[str], None]
+SHIP_FILES = ("assembled.pdb", "system.xml", "assemble.json")
 
 
 @dataclass
@@ -61,6 +63,7 @@ def assemble(
     )
 
     require_openmm()
+    gpu_must_not_pack()
     proto = protocol or load_protocol()
     log = progress or (lambda _m: None)
     workdir = Path(workdir)
@@ -101,40 +104,28 @@ def assemble(
     notes.extend(fix_notes)
     assert_finite_positions(protein.positions, where="after pdbfixer")
 
-    plat, plat_name = pick_platform(proto.platform_preference)
+    plat, plat_name = pick_platform(["CPU"])
     pads = _pad_schedule(pad)
     built = False
     used_pad = pad
     last: Exception | None = None
-    platforms = [(plat_name, plat)]
-    if plat_name != "CPU":
-        from openmm import Platform
-
-        try:
-            platforms.append(("CPU", Platform.getPlatformByName("CPU")))
-        except Exception:  # noqa: BLE001
-            pass
 
     ionic = float(session.system.membrane.ionic_strength_M)
-    for pname, pobj in platforms:
-        for p in pads:
-            modeller = Modeller(protein.topology, protein.positions)
+    for p in pads:
+        modeller = Modeller(protein.topology, protein.positions)
+        try:
+            log(f"addMembrane {lipid} platform=CPU pad={p:g} nm")
+            _add_membrane(modeller, ff, plat, lipid, p, ionic)
             try:
-                log(f"addMembrane {lipid} platform={pname} pad={p:g} nm")
-                _add_membrane(modeller, ff, pobj, lipid, p, ionic)
-                try:
-                    assert_finite_positions(modeller.positions, where="after addMembrane")
-                except RefuseError as nan_exc:
-                    raise RuntimeError(str(nan_exc.message)) from nan_exc
-                plat_name = pname
-                used_pad = p
-                built = True
-                break
-            except Exception as exc:  # noqa: BLE001
-                last = exc
-                log(f"addMembrane failed ({pname}, {p:g} nm): {exc}")
-        if built:
+                assert_finite_positions(modeller.positions, where="after addMembrane")
+            except RefuseError as nan_exc:
+                raise RuntimeError(str(nan_exc.message)) from nan_exc
+            used_pad = p
+            built = True
             break
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            log(f"addMembrane failed (CPU, {p:g} nm): {exc}")
     if not built:
         raise RefuseError(f"addMembrane failed: {last}")
 
@@ -285,6 +276,27 @@ def default_workdir(session: Session, out: Path | None) -> Path:
     if out is not None:
         return Path(out)
     return Path("runs") / session.system.name
+
+
+def have_assembled(workdir: Path) -> bool:
+    root = Path(workdir)
+    return all((root / name).is_file() for name in SHIP_FILES)
+
+
+def gpu_must_not_pack(*, cuda: bool | None = None) -> None:
+    """addMembrane is CPU packing. A billed CUDA device must not sit idle through it."""
+    if os.environ.get("ADAPTAMEM_ASSEMBLE_ON_GPU") == "1":
+        return
+    if cuda is None:
+        from adaptamem.sim import cuda_available
+
+        cuda = cuda_available()
+    if cuda:
+        raise RefuseError(
+            "addMembrane is CPU work. Assemble on a CPU host and ship "
+            "assembled.pdb + system.xml; do not pack lipids on a billed GPU.",
+            code="NOT_READY",
+        )
 
 
 def assert_backbone_packable(pdb_path: Path, *, min_ca_ca_angstrom: float = 2.5) -> None:

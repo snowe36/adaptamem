@@ -79,6 +79,18 @@ def pick_platform(preference: list[str] | None = None) -> tuple[Any, str]:
     raise RefuseError(f"no OpenMM platform from {order}: {last}", code=MISSING_ENGINE)
 
 
+def cuda_available() -> bool:
+    if not openmm_available():
+        return False
+    from openmm import Platform
+
+    try:
+        Platform.getPlatformByName("CUDA")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def hardware_label(platform: Any, platform_name: str) -> str:
     if platform_name == "CUDA":
         for key in ("DeviceName", "CudaDeviceName"):

@@ -10,35 +10,62 @@ Three independent attacks. A faster timestep that changes the ensemble is not th
 | Fewer timesteps | steps you bother to take (eq scorecard, branching, early stop, CV-guided sampling) | yes, if you still integrate the same Hamiltonian |
 | Fewer expensive atoms | particles on the AA Hamiltonian (box, water, hybrid membrane, implicit bulk) | **no**, the moment lipids/water are CG or implicit |
 
-`ns/day` comparisons are only legal inside **same_physics**. Approximations are labeled and have their own accuracy bar.
+Phase order: trustworthy PDB→MD **teacher** (tier 1) → **oracle-compression** against a long held-out AA trajectory on a *slow* CV (tier 2: MSM, learned propagator, latent dynamics, generative eq, hybrid CPU + sparse GPU) → only then hybrid resolution (tier 3). Adaptive walker allocation is a baseline. It is not tier 2.
+
+`ns/day` comparisons are only legal inside **same_physics**. Approximations are labeled.
+
+**GPU teaches. CPU predicts. GPU is called only when CPU does not know.**
+
+| Stage | Default | Purpose |
+|-------|---------|---------|
+| `prepare` | CPU | acquire inputs, orient, assemble |
+| `features` | CPU | observables / latent representation |
+| `compress` | CPU | learn occupancy / transitions / sufficient statistics |
+| `infer` | CPU | production-scale search |
+| `analyze` | CPU | compression = MD avoided / oracle spent |
+| `oracle` | GPU, explicit | short trustworthy labels |
+
+`adaptamem run` is a REFUSE. The loop is prepare → features → infer → uncertain regions → oracle on a tiny subset → compress → infer.
 
 ```
-PDB / CIF  +  objective  +  GPU-hour budget
-                    │
-                    ▼
-            Structure Doctor
-                    │
-                    ▼
-         cheapest sufficient box
-                    │
-                    ▼
-          STRATEGY (three axes)
-                    │
-         ┌──────────┼──────────┐
-         ▼          ▼          ▼
-      cheaper    fewer      fewer
-      timestep   steps      expensive
-                            atoms
-                    │
-                    ▼
-     same_physics  or  approximation
-                    │
-                    ▼
-     pilot → cartography → allocate → stop
-     or REFUSE (question cannot be answered at this budget)
+          short MD shots (teacher)
+                   │
+                   ▼
+          learned representation
+                   │
+          ┌────────┴─────────┐
+          ▼                  ▼
+    latent dynamics      equilibrium
+       model              generator
+          │                  │
+          └────────┬─────────┘
+                   ▼
+             cheap CPU
+             exploration
+                   │
+            uncertainty
+                   │
+            ┌──────┴──────┐
+            │             │
+          confident     uncertain
+            │             │
+            ▼             ▼
+        CPU result     sparse MD
+                          │
+                          └──► update model
 ```
 
-Walker count and nanoseconds are scheduler **outputs**.
+Primary score:
+
+\[
+\mathrm{compression} = \frac{\text{baseline MD compute avoided}}{\text{GPU oracle compute spent}}
+\]
+
+\[
+\mathrm{speedup} = \frac{\text{baseline production MD cost}}{\text{CPU inference cost} + \text{oracle cost}}
+\]
+
+Acceleration is ≥10× at matched ε, or CPU-only inference that matches. Lower CI is not a claim. The method must not see future oracle frames, oracle populations, or the oracle mean at inference (`LEAKAGE`). Adaptive walker allocation is a baseline control. It is not the product.
 
 ## Objective types
 
@@ -52,13 +79,13 @@ Walker count and nanoseconds are scheduler **outputs**.
 
 ## Tiers
 
-**1 — same physics, build now.** Geometry box, water pad, GPU bench, batched short replicas, eq scorecard, adaptive lengths, sparse I/O, 4 fs HMR with validation.
+**1 — same physics, teacher.** Geometry box, water pad, GPU bench, 4 fs HMR, short trustworthy MD used as the oracle's teacher set.
 
-**2 — differentiation.** Branching walkers, automatic CVs, objective-driven U(Δ), multi-fidelity promotion, cross-system transfer, adaptive box growth, platform selection.
+**2 — compression.** MSM / milestoning / weighted ensemble from short shots, learned propagator or latent dynamics, generative equilibrium sampling, active MD only when the model is uncertain, hybrid CPU surrogate + sparse GPU correction. Goal: 10–100× fewer GPU-hours at matched oracle error, or CPU-only inference.
 
-**3 — research ceiling.** Moving AA/CG membrane, effective membrane potentials, particle–continuum boundaries, ML bulk forces, selective PME/precision, reduced-DOF protein.
+**3 — research ceiling.** Moving AA/CG membrane, effective membrane potentials, particle–continuum boundaries — after compression is real.
 
-Phase order: trustworthy PDB→MD (tier 1) → adaptive sampler proved against a held-out 100 ns AA trajectory (tier 2) → only then point hybrid resolution at regions the sampler already knows are useful (tier 3).
+Phase order: trustworthy PDB→MD teacher (tier 1) → compress against a held-out long AA oracle on a slow CV (tier 2) → hybrid resolution only where the model already knows it is cheap (tier 3). Do not spend tier 2 on an easy well.
 
 ## Other constraints (easy to miss)
 
@@ -77,6 +104,6 @@ Phase order: trustworthy PDB→MD (tier 1) → adaptive sampler proved against a
 - **Two clocks.** Campaign wall-clock ≠ replica ns/day.
 - **Do not saturate-batch** a 600k-atom complex; batching is for small walkers.
 
-Implemented now: doctor, geometry box, strategy, TM-axis orient, optional local PPM, compact OpenMM addMembrane, CHARMM36-complete POPE:POPG swap, CHARMM36 HMR 4 fs, eq scorecard, rich `bench.json` + atom-count ladder, production streaming CVs, campaign IDs, iterative sample loop (uncertainty × coverage), held-out oracle + equal-compute / equal-precision compare. Martini execution is not built.
+Implemented now: doctor, geometry box, CHARMM36 HMR 4 fs teacher path, held-out oracle, `oracle_compression` (GPU-hours to ε), adaptive `sample` as a baseline, named `compress` plugs that REFUSE until they learn from short MD. Martini execution is not built.
 
-Layers: **physics** (is it valid?) → **performance** (`bench`) → **inference** (`sample`) → **decision** (`select` / `REFUSE`).
+Layers: **physics** (is the teacher valid?) → **performance** (`bench`) → **compression** (predict without integrating missing time) → **decision** (`REFUSE`).

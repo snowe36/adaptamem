@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""1AFO glycophorin: same CHARMM36 HMR 4 fs Hamiltonian, pre vs post sampling.
+"""5EH4 glycophorin: same CHARMM36 HMR 4 fs Hamiltonian, pre vs post sampling.
 
 One process, no install steps. CUDA must already be the OpenMM platform
-(see docker/gpu.Dockerfile). Writes runs/1afo/compare.json.
+(see docker/gpu.Dockerfile). Writes runs/5eh4/compare.json.
 """
 
 from __future__ import annotations
@@ -19,8 +19,9 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 YAML = ROOT / "examples" / "glycophorin.yaml"
-WORKDIR = ROOT / "runs" / "1afo"
-PDB_ID = "1AFO"
+WORKDIR = ROOT / "runs" / "5eh4"
+PDB_ID = "5EH4"
+CHAINS = "AB"
 ORACLE_NS = 20.0
 METHOD_NS = 5.0
 MAX_GPU_HOURS = 4.0
@@ -42,14 +43,31 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def fetch_1afo(dest: Path) -> Path:
+def fetch_pdb(dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.is_file() and dest.stat().st_size > 1000:
         log(f"fetch     skip {dest}")
-        return dest
-    script = ROOT / "scripts" / "fetch_pdb.sh"
-    subprocess.check_call(["bash", str(script), PDB_ID, str(dest)])
+    else:
+        script = ROOT / "scripts" / "fetch_pdb.sh"
+        subprocess.check_call(["bash", str(script), PDB_ID, str(dest)])
+    keep_chains(dest, CHAINS)
     return dest
+
+
+def keep_chains(path: Path, chains: str) -> None:
+    """Keep protein ATOM/TER for one biological copy. Drop crystal lipids (HETATM)."""
+    allowed = set(chains)
+    out: list[str] = []
+    for line in Path(path).read_text().splitlines(keepends=True):
+        if line.startswith(("ATOM", "TER")):
+            chain = line[21] if len(line) > 21 else ""
+            if chain in allowed:
+                out.append(line)
+            continue
+        if line.startswith(("HETATM", "ANISOU", "MODEL", "ENDMDL")):
+            continue
+        out.append(line)
+    Path(path).write_text("".join(out))
 
 
 def plan_lengths(ns_day: float, remaining_hours: float) -> tuple[float, float]:
@@ -116,29 +134,32 @@ def traces_from_sample(workdir: Path) -> dict[str, list[float]]:
 def verdict(compare: dict[str, Any], refused: str | None) -> str:
     if refused:
         return f"REFUSE ({refused})"
-    eq = (compare.get("equal_compute") or {}).get("methods") or {}
-    pre = (eq.get("single_long") or {}).get("g83_sep") or {}
-    ctrl = (eq.get("independent_replicas") or {}).get("g83_sep") or {}
-    post = (eq.get("adaptive") or {}).get("g83_sep") or {}
-    pre_u = pre.get("ci_width_per_gpu_hour")
-    ctrl_u = ctrl.get("ci_width_per_gpu_hour")
-    post_u = post.get("ci_width_per_gpu_hour")
-    in_ci = post.get("oracle_mean_in_ci")
-    rec_pre = pre.get("bin_recovery")
-    rec_post = post.get("bin_recovery")
-    if post_u is None or pre_u is None:
-        return "incomplete — missing U/GPU-h"
-    post_beats_pre = float(post_u) < float(pre_u)
-    covered = bool(in_ci) or (
-        rec_post is not None and rec_pre is not None and float(rec_post) > float(rec_pre)
-    )
-    if post_beats_pre and covered:
-        return "post wins (adaptive lower U/GPU-h than single_long; oracle mean in CI or better recovery)"
-    if ctrl_u is not None and float(ctrl_u) < float(pre_u) and not (
-        post_u is not None and float(post_u) < float(ctrl_u)
+    oc = (compare.get("oracle_compression") or {}).get("methods") or {}
+    if not oc:
+        return "incomplete — missing oracle_compression"
+    for method, obs in oc.items():
+        for d in obs.values():
+            acc = d.get("acceleration") or {}
+            if acc.get("accelerated"):
+                return f"10× acceleration claim ({method})"
+            if d.get("leaked") or acc.get("reason") == "oracle leakage":
+                return "no acceleration claim — oracle leakage"
+    first = next(iter(oc.values()), {})
+    obs_name = next(iter(first), None)
+    pre_h = ((oc.get("single_long") or {}).get(obs_name) or {}).get("gpu_hours_to_error")
+    ctrl_h = ((oc.get("independent_replicas") or {}).get(obs_name) or {}).get("gpu_hours_to_error")
+    post_h = ((oc.get("adaptive") or {}).get(obs_name) or {}).get("gpu_hours_to_error")
+    if pre_h is None:
+        if post_h is not None:
+            return "no acceleration claim — method hit ε; conventional baseline did not"
+        return "no acceleration claim — conventional never hit oracle ε"
+    if post_h is not None and float(post_h) < float(pre_h):
+        return "no acceleration claim — below 10× bar (matched ε is required, 10× is the claim)"
+    if ctrl_h is not None and float(ctrl_h) < float(pre_h) and (
+        post_h is None or float(post_h) >= float(ctrl_h)
     ):
-        return "no acceleration — replicas beat single_long; adaptive did not beat replicas"
-    return "post did not beat pre at equal GPU-hours"
+        return "no acceleration claim — replicas beat single_long; adaptive did not (more MD, not a teacher)"
+    return "no acceleration claim — method did not beat conventional GPU-hours to oracle ε"
 
 
 def format_block(
@@ -154,14 +175,15 @@ def format_block(
     post = methods.get("adaptive") or {}
 
     def _row(tag: str, label: str, d: dict[str, Any]) -> str:
+        hours = d.get("gpu_hours_to_error")
         return (
-            f"{tag:<9}{label:<22} U/GPU-h={d.get('ci_width_per_gpu_hour')}  "
-            f"CI={d.get('ci95')}  μ={d.get('estimate')}"
+            f"{tag:<9}{label:<22} hours_to_ε={hours}  "
+            f"U/GPU-h={d.get('ci_width_per_gpu_hour')}  μ={d.get('estimate')}"
         )
 
     return "\n".join(
         [
-            f"PRE/POST  1AFO g83_sep  {ns_day:.1f} ns/day  {n_atoms} atoms",
+            f"COMPRESS  {PDB_ID}  {ns_day:.1f} ns/day  {n_atoms} atoms",
             f"oracle    μ={o.get('estimate')}  CI={o.get('ci95')}",
             _row("pre", "single_long", pre),
             _row("ctrl", "independent_replicas", ctrl),
@@ -241,20 +263,36 @@ def main() -> int:
     refused: str | None = None
 
     pdb = ROOT / "data" / "structures" / f"{PDB_ID}.pdb"
-    fetch_1afo(pdb)
+    fetch_pdb(pdb)
 
-    from adaptamem.assemble import assemble
+    from adaptamem.assemble import assemble, have_assembled
     from adaptamem.bench import bench
     from adaptamem.compare import MethodRun, compare, write_compare
     from adaptamem.oracle import freeze, load_oracle
     from adaptamem.produce import produce
     from adaptamem.session import load_session
+    from adaptamem.sim import cuda_available
 
     session = load_session(YAML)
-    if not (WORKDIR / "system.xml").is_file():
-        assemble(session, WORKDIR, progress=log)
+    cuda = cuda_available()
+    if (WORKDIR / "eq.pdb").is_file():
+        log(f"assemble  skip {WORKDIR / 'eq.pdb'}")
+    elif have_assembled(WORKDIR):
+        log(f"assemble  skip shipped {WORKDIR / 'assembled.pdb'}")
+        if not cuda:
+            log("ASSEMBLE_DONE  CPU assembled system is ready to ship; no CUDA here")
+            return 0
+    elif cuda:
+        log(
+            "CAMPAIGN_FAIL  no assembled.pdb; addMembrane is CPU work. "
+            "Assemble on a CPU host and ship assembled.pdb + system.xml."
+        )
+        print("CAMPAIGN_FAIL", flush=True)
+        return 2
     else:
-        log(f"assemble  skip {WORKDIR / 'system.xml'}")
+        assemble(session, WORKDIR, force=True, progress=log)
+        log("ASSEMBLE_DONE  ship assembled.pdb system.xml assemble.json; GPU eq is a later step")
+        return 0
 
     if not (WORKDIR / "eq.pdb").is_file():
         _run_eq(WORKDIR)
@@ -293,6 +331,7 @@ def main() -> int:
             extra={"seed": 42, "role": "held_out"},
         )
     oracle = load_oracle(WORKDIR / "oracle.json")
+    oracle_run = _load(WORKDIR / "oracle_run.json")
 
     chunk_ns = min(0.5, max(0.05, method_ns / 4.0))
     method_hours = method_ns / ns_day * 24.0 if ns_day else 0.0
@@ -338,7 +377,7 @@ def main() -> int:
         MethodRun("independent_replicas", rep.get("values") or {}, float(rep.get("gpu_hours") or 0.0), rep.get("ns")),
         MethodRun("adaptive", ad.get("values") or {}, float(ad.get("gpu_hours") or 0.0), ad.get("ns")),
     ]
-    payload = compare(oracle, runs, precision=PRECISION)
+    payload = compare(oracle, runs, precision=PRECISION, error=PRECISION, oracle_gpu_hours=float(oracle_run.get("gpu_hours") or 0.0) or None)
     payload["bench"] = {"ns_per_day": ns_day, "n_atoms": n_atoms}
     payload["plan"] = {"oracle_ns": oracle_ns, "method_ns": method_ns, "max_gpu_hours": MAX_GPU_HOURS}
     payload["refuse"] = refused
@@ -347,14 +386,21 @@ def main() -> int:
     write_compare(payload, WORKDIR / "compare.json")
 
     eqm = (payload.get("equal_compute") or {}).get("methods") or {}
+    ocm = (payload.get("oracle_compression") or {}).get("methods") or {}
+
+    def _arm(name: str) -> dict[str, Any]:
+        row = dict((eqm.get(name) or {}).get("g83_sep") or {})
+        row.update((ocm.get(name) or {}).get("g83_sep") or {})
+        return row
+
     block = format_block(
         ns_day,
         n_atoms,
         oracle.to_dict() | {"observables": oracle.estimates},
         {
-            "single_long": (eqm.get("single_long") or {}).get("g83_sep") or {},
-            "independent_replicas": (eqm.get("independent_replicas") or {}).get("g83_sep") or {},
-            "adaptive": (eqm.get("adaptive") or {}).get("g83_sep") or {},
+            "single_long": _arm("single_long"),
+            "independent_replicas": _arm("independent_replicas"),
+            "adaptive": _arm("adaptive"),
         },
         decision,
     )
@@ -363,9 +409,25 @@ def main() -> int:
     return 0 if refused is None else 2
 
 
+def _shutdown(reason: str) -> None:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from runpod_watchdog import terminate_self
+    except ImportError:
+        log(f"watchdog  skip import ({reason})")
+        return
+    terminate_self(reason)
+
+
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        code = main()
+        _shutdown("campaign_done")
+        raise SystemExit(code)
+    except SystemExit:
+        raise
     except Exception:
         traceback.print_exc()
-        raise
+        print("CAMPAIGN_FAIL", flush=True)
+        _shutdown("campaign_fail")
+        raise SystemExit(0)

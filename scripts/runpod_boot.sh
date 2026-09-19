@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Entire container command when the CUDA image is used. No pip, no GPU_JOB_B64.
-set -euo pipefail
+# GPU oracle only. Assembled system must already be on the pod.
+# Always exit 0 so a refusal cannot crash-loop the meter.
+set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-python scripts/gpu_campaign.py
-sleep 120
+python scripts/gpu_oracle.py
+status=$?
+if [ "$status" -ne 0 ]; then
+  echo "ORACLE_FAIL rc=$status"
+fi
+python scripts/runpod_watchdog.py --kill --reason "oracle_exit_${status}" || true
+exit 0

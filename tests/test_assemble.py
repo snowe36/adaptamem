@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from adaptamem.assemble import assemble, assert_backbone_packable, default_workdir
+from adaptamem.assemble import (
+    assemble,
+    assert_backbone_packable,
+    default_workdir,
+    gpu_must_not_pack,
+    have_assembled,
+)
 from adaptamem.cli import main
 from adaptamem.errors import RefuseError
 from adaptamem.lipids import plan_mix
@@ -81,6 +87,20 @@ def test_assemble_cli_without_openmm(tmp_path: Path):
     pdb = helix_pdb(tmp_path / "leu.pdb")
     code = main(["assemble", str(pdb), "--out", str(tmp_path / "run")])
     assert code == 2
+
+
+def test_gpu_must_not_pack_lipids():
+    gpu_must_not_pack(cuda=False)
+    with pytest.raises(RefuseError, match="CPU host"):
+        gpu_must_not_pack(cuda=True)
+
+
+def test_have_assembled(tmp_path: Path):
+    assert have_assembled(tmp_path) is False
+    (tmp_path / "assembled.pdb").write_text("ATOM\n")
+    (tmp_path / "system.xml").write_text("<System/>\n")
+    (tmp_path / "assemble.json").write_text("{}\n")
+    assert have_assembled(tmp_path) is True
 
 
 def test_cli_assemble_help():

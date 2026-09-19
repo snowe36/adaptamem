@@ -26,7 +26,9 @@ def test_example_recipes_load():
     assert dltb.objective.discover_cvs
     assert dltb.membrane.optimize_size
     b2ar = load_system(ROOT / "examples" / "b2ar.yaml")
+    assert b2ar.name == "b2ar_2rh1"
     assert b2ar.objective.type == "conformational_shift"
+    assert b2ar.objective.observables[0].name == "tm6_ic"
     gpa = load_system(ROOT / "examples" / "glycophorin.yaml")
     assert gpa.compute.max_gpu_hours == 20
     assert gpa.objective.observables[0].kind == "distance"

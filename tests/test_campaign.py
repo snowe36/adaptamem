@@ -49,12 +49,42 @@ def test_verdict_and_block():
         "adaptive": (payload["equal_compute"]["methods"]["adaptive"]["g83_sep"]),
     }, decision)
     assert block.count("\n") == 5
-    assert "PRE/POST" in block
+    assert "COMPRESS" in block
     assert "CAMPAIGN_DONE" not in block
-    assert "post wins" in decision or "REFUSE" in camp.verdict(payload, "BUDGET")
+    assert "acceleration" in decision or "REFUSE" in camp.verdict(payload, "BUDGET")
+
+
+def test_keep_chains_drops_crystal_copy(tmp_path: Path):
+    camp = _load_campaign()
+    pdb = tmp_path / "xtal.pdb"
+    pdb.write_text(
+        "ATOM      1  CA  GLY A  83       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  CA  GLY B  83       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY C  83       9.000   9.000   9.000  1.00  0.00           C\n"
+        "ATOM      4  CA  GLY D  83       8.000   9.000   9.000  1.00  0.00           C\n"
+        "HETATM    5  C1  OLB A 201       0.500   0.500   0.500  1.00  0.00           C\n"
+    )
+    camp.keep_chains(pdb, "AB")
+    text = pdb.read_text()
+    assert "GLY A  83" in text
+    assert "GLY B  83" in text
+    assert "GLY C  83" not in text
+    assert "GLY D  83" not in text
+    assert "OLB" not in text
 
 
 def test_pyproject_has_gpu_extra():
     text = Path(__file__).resolve().parents[1].joinpath("pyproject.toml").read_text()
     assert "openmm[cuda12]" in text
     assert "gpu =" in text or 'gpu =' in text
+
+
+def test_watchdog_missing_env(monkeypatch):
+    monkeypatch.delenv("RUNPOD_POD_ID", raising=False)
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    script = Path(__file__).resolve().parents[1] / "scripts" / "runpod_watchdog.py"
+    spec = spec_from_file_location("adaptamem_runpod_watchdog", script)
+    assert spec is not None and spec.loader is not None
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.terminate_self("test") is False
