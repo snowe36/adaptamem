@@ -61,8 +61,17 @@ class Protocol:
     hydrogen_mass_amu: float
     nonbonded_cutoff_nm: float
     temperature_K: float
+    pressure_bar: float
     eq_timestep_fs: float
+    eq_nvt_restrained_ps: float
+    eq_npt_restrained_ns: float
+    eq_free_membrane_ns: float
+    eq_stop_on_qc: bool
     save_interval_ps: float
+    platform_preference: list[str]
+    bench_steps: int
+    force_field: str
+    water: str
     raw: dict[str, Any]
 
 
@@ -71,13 +80,24 @@ def load_protocol(path: Path | None = None) -> Protocol:
     raw = _read_yaml(p)
     eq = raw.get("equilibration") or {}
     traj = raw.get("trajectory") or {}
+    bench = raw.get("bench") or {}
+    prefs = raw.get("platform_preference") or ["CUDA", "OpenCL", "CPU"]
     return Protocol(
         timestep_fs=float(raw["timestep_fs"]),
         hydrogen_mass_amu=float(raw["hydrogen_mass_amu"]),
         nonbonded_cutoff_nm=float(raw["nonbonded_cutoff_nm"]),
         temperature_K=float(raw["temperature_K"]),
+        pressure_bar=float(raw.get("pressure_bar", 1.0)),
         eq_timestep_fs=float(eq.get("timestep_fs", raw["timestep_fs"])),
+        eq_nvt_restrained_ps=float(eq.get("nvt_restrained_ps", 50)),
+        eq_npt_restrained_ns=float(eq.get("npt_restrained_ns", 0.25)),
+        eq_free_membrane_ns=float(eq.get("free_membrane_ns", 2.0)),
+        eq_stop_on_qc=bool(eq.get("stop_on_membrane_qc", True)),
         save_interval_ps=float(traj.get("save_interval_ps", 100)),
+        platform_preference=[str(x) for x in prefs],
+        bench_steps=int(bench.get("steps", 20000)),
+        force_field=str(raw.get("force_field", "CHARMM36")),
+        water=str(raw.get("water", "TIP3P")),
         raw=raw,
     )
 

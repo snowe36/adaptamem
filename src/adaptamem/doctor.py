@@ -75,6 +75,7 @@ class DoctorReport:
     clashes: int
     findings: list[Finding] = field(default_factory=list)
     bbox_nm: tuple[float, float, float] | None = None
+    tm_ca_angstrom: list[tuple[float, float, float]] = field(default_factory=list)
 
     @property
     def n_tm(self) -> int:
@@ -99,6 +100,7 @@ def audit(path: Path) -> DoctorReport:
     spans = _tm_spans(protein)
     clashes = _count_clashes(protein)
     bbox = _bbox_nm(protein)
+    tm_ca = _tm_ca(protein, spans)
     findings: list[Finding] = []
     if missing:
         findings.append(
@@ -138,6 +140,7 @@ def audit(path: Path) -> DoctorReport:
         clashes=clashes,
         findings=findings,
         bbox_nm=bbox,
+        tm_ca_angstrom=tm_ca,
     )
 
 
@@ -306,6 +309,49 @@ def _bbox_nm(protein: list[Atom]) -> tuple[float, float, float] | None:
         (max(ys) - min(ys)) / 10.0,
         (max(zs) - min(zs)) / 10.0,
     )
+
+
+def _tm_ca(
+    protein: list[Atom], spans: list[tuple[str, int, int]]
+) -> list[tuple[float, float, float]]:
+    if not spans:
+        return []
+    out: list[tuple[float, float, float]] = []
+    for a in protein:
+        if a.name != "CA" or a.alt not in {"", " ", "A"}:
+            continue
+        if any(a.chain == ch and lo <= a.resid <= hi for ch, lo, hi in spans):
+            out.append((a.x, a.y, a.z))
+    return out
+
+
+def load_atoms(path: Path) -> list[Atom]:
+    atoms, _, _ = _parse_pdb(Path(path).read_text(errors="replace").splitlines())
+    return atoms
+
+
+def select_protein(atoms: list[Atom]) -> list[Atom]:
+    return [
+        a
+        for a in atoms
+        if not a.het and a.resname in _AA3 and a.alt in {"", " ", "A"}
+    ]
+
+
+def write_pdb(atoms: list[Atom], path: Path, *, remarks: list[str] | None = None) -> None:
+    lines: list[str] = []
+    for rem in remarks or []:
+        lines.append("REMARK  " + rem)
+    for i, a in enumerate(atoms, start=1):
+        rec = "HETATM" if a.het else "ATOM  "
+        name = a.name if len(a.name) == 4 else f" {a.name:<3s}"
+        elem = (a.element or a.name[:1])[:2]
+        lines.append(
+            f"{rec}{i:5d} {name}{a.alt or ' ':1s}{a.resname:>3s} {a.chain:1s}{a.resid:4d}"
+            f"    {a.x:8.3f}{a.y:8.3f}{a.z:8.3f}  1.00  0.00          {elem:>2s}"
+        )
+    lines.append("END")
+    Path(path).write_text("\n".join(lines) + "\n")
 
 
 def _safe_int(s: str, default: int) -> int:

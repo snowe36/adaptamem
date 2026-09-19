@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4", "ruff>=0.6"]
-sim = ["openmm>=8.1", "mdtraj>=1.10", "numpy>=1.24"]
+sim = ["openmm>=8.1", "mdtraj>=1.10"]
 
 [project.scripts]
 adaptamem = "adaptamem.cli:main"
@@ -26,6 +26,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 adaptamem = ["resources/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
 
 [tool.ruff]
 line-length = 100

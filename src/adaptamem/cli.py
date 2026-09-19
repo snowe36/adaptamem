@@ -5,11 +5,14 @@ import shutil
 import sys
 from pathlib import Path
 
-from adaptamem.box import format_box, plan_box
+from adaptamem.assemble import assemble, default_workdir, format_assemble
+from adaptamem.box import format_box
 from adaptamem.doctor import audit, format_report
-from adaptamem.objective import parse_objective
+from adaptamem.errors import RefuseError
+from adaptamem.orient import format_orient
 from adaptamem.schema import default_system_template_path, load_system
-from adaptamem.strategy import choose, format_strategy
+from adaptamem.session import load_session
+from adaptamem.strategy import format_strategy
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -17,7 +20,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="adaptamem",
         description=(
             "Decide the cheapest membrane-protein simulation that can answer "
-            "the objective. Not a fixed MD recipe."
+            "the objective, then run the Phase 1 OpenMM path."
         ),
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -29,40 +32,64 @@ def main(argv: list[str] | None = None) -> int:
     p_doc.add_argument("structure", type=Path)
 
     p_plan = sub.add_parser("plan", help="Doctor + cheapest box + next experiment")
-    p_plan.add_argument("input", type=Path, help="PDB or system YAML")
-    p_plan.add_argument(
-        "--objective",
-        default=None,
-        help="conventional | conformational-shift | discover-states | comparison | membrane-environment",
-    )
-    p_plan.add_argument("--budget-hours", type=float, default=None)
+    _job_args(p_plan)
 
     p_val = sub.add_parser("validate", help="Load a system YAML")
     p_val.add_argument("system", type=Path)
 
-    p_run = sub.add_parser("run", help="Execute the planned experiment (physics not built)")
-    p_run.add_argument("input", type=Path)
-    p_run.add_argument("--objective", default=None)
-    p_run.add_argument("--budget-hours", type=float, default=None)
+    p_asm = sub.add_parser("assemble", help="Orient + compact OpenMM membrane + 4 fs HMR system")
+    _job_args(p_asm)
+    p_asm.add_argument("--out", type=Path, default=None)
+    p_asm.add_argument("--force", action="store_true", help="Override doctor ACTION items")
+
+    p_eq = sub.add_parser("equilibrate", help="Minimize + 4 fs eq with membrane QC")
+    p_eq.add_argument("workdir", type=Path)
+    p_eq.add_argument("--short", action="store_true", help="Minimize + 100 steps (tests / smoke)")
+
+    p_bench = sub.add_parser("bench", help="ns/day of the assembled system")
+    p_bench.add_argument("workdir", type=Path)
+    p_bench.add_argument("--steps", type=int, default=None)
+
+    p_run = sub.add_parser("run", help="Plan + assemble + equilibrate")
+    _job_args(p_run)
+    p_run.add_argument("--out", type=Path, default=None)
+    p_run.add_argument("--force", action="store_true")
+    p_run.add_argument("--short", action="store_true")
+    p_run.add_argument("--bench", action="store_true")
 
     args = parser.parse_args(argv)
-    if args.cmd == "init":
-        return _init(args.out)
-    if args.cmd == "doctor":
-        return _doctor(args.structure)
-    if args.cmd == "plan":
-        return _plan(args.input, args.objective, args.budget_hours)
-    if args.cmd == "validate":
-        return _validate(args.system)
-    if args.cmd == "run":
-        _plan(args.input, args.objective, args.budget_hours)
-        print(
-            "\nphysics engine is not built — this is the decision layer only",
-            file=sys.stderr,
-        )
+    try:
+        if args.cmd == "init":
+            return _init(args.out)
+        if args.cmd == "doctor":
+            return _doctor(args.structure)
+        if args.cmd == "plan":
+            return _plan(args.input, args.objective, args.budget_hours)
+        if args.cmd == "validate":
+            return _validate(args.system)
+        if args.cmd == "assemble":
+            return _assemble(args)
+        if args.cmd == "equilibrate":
+            return _equilibrate(args.workdir, args.short)
+        if args.cmd == "bench":
+            return _bench(args.workdir, args.steps)
+        if args.cmd == "run":
+            return _run(args)
+    except RefuseError as exc:
+        print(f"REFUSE  {exc.message}", file=sys.stderr)
         return 2
     parser.error(f"unknown command {args.cmd}")
     return 2
+
+
+def _job_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("input", type=Path, help="PDB or system YAML")
+    p.add_argument(
+        "--objective",
+        default=None,
+        help="conventional | conformational-shift | discover-states | comparison | membrane-environment",
+    )
+    p.add_argument("--budget-hours", type=float, default=None)
 
 
 def _init(out: Path) -> int:
@@ -80,66 +107,88 @@ def _doctor(path: Path) -> int:
     return 0
 
 
-def _resolve(path: Path, cli_objective: str | None):
-    if path.suffix.lower() in {".yml", ".yaml"}:
-        system = load_system(path)
-        obj = parse_objective(
-            {
-                "type": system.objective.type,
-                "observables": [
-                    {
-                        "name": o.name,
-                        "kind": o.kind,
-                        "selection": o.selection,
-                        "precision": o.precision,
-                    }
-                    for o in system.objective.observables
-                ],
-                "discover_cvs": system.objective.discover_cvs,
-            },
-            cli_type=cli_objective,
-        )
-        return system, audit(system.structure), obj
-    from adaptamem.schema import Membrane, Orientation, System
-
-    obj = parse_objective({}, cli_type=cli_objective or "discover_states")
-    system = System(
-        name=path.stem,
-        structure=path,
-        orientation=Orientation(),
-        membrane=Membrane(),
-        objective=obj,
-        source=None,
-    )
-    return system, audit(path), obj
-
-
 def _plan(path: Path, cli_objective: str | None, budget_hours: float | None = None) -> int:
-    system, report, obj = _resolve(path, cli_objective)
-    print(format_report(report))
+    session = load_session(path, cli_objective=cli_objective, budget_hours=budget_hours)
+    print(format_report(session.report))
     print()
-    box = plan_box(
-        report,
-        water_pad_nm=system.membrane.water_pad_nm,
-        safety_margin_nm=system.membrane.safety_margin_nm,
-    )
-    print(format_box(box))
+    print(format_box(session.box))
     print()
-    strat = choose(report, obj, box, budget_gpu_hours=budget_hours)
-    print(format_strategy(strat))
+    print(format_strategy(session.strategy))
     print()
     print("EXPERIMENT")
-    print(f"objective     {obj.type}")
-    if obj.observables:
-        for o in obj.observables:
+    print(f"objective     {session.objective.type}")
+    if session.objective.observables:
+        for o in session.objective.observables:
             prec = f"  precision={o.precision}" if o.precision is not None else ""
             print(f"  observable  {o.name} ({o.kind}){prec}")
-    elif obj.discover_cvs:
+    elif session.objective.discover_cvs:
         print("  CVs from a short pilot (TICA/PCA) — not user-specified")
     else:
         print("  conventional single trajectory")
     print("walker count and ns/walker are scheduler outputs, not inputs")
-    return 0 if strat.ok else 2
+    return 0 if session.strategy.ok else 2
+
+
+def _assemble(args: argparse.Namespace) -> int:
+    session = load_session(
+        args.input, cli_objective=args.objective, budget_hours=args.budget_hours
+    )
+    print(format_report(session.report))
+    print()
+    print(format_box(session.box))
+    print()
+    print(format_strategy(session.strategy))
+    print()
+    workdir = default_workdir(session, args.out)
+    result = assemble(session, workdir, force=args.force, progress=_progress)
+    print()
+    print(format_orient(result.orient))
+    print()
+    print(format_assemble(result))
+    return 0
+
+
+def _equilibrate(workdir: Path, short: bool) -> int:
+    from adaptamem.equilibrate import equilibrate, format_eq
+
+    result = equilibrate(workdir, short=short, progress=_progress)
+    print(format_eq(result))
+    return 0 if result.qc.ok or short else 1
+
+
+def _bench(workdir: Path, steps: int | None) -> int:
+    from adaptamem.bench import bench, format_bench
+
+    print(format_bench(bench(workdir, steps=steps)))
+    return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    from adaptamem.equilibrate import equilibrate, format_eq
+
+    session = load_session(
+        args.input, cli_objective=args.objective, budget_hours=args.budget_hours
+    )
+    session.gate_run(force=args.force)
+    print(format_report(session.report))
+    print()
+    print(format_box(session.box))
+    print()
+    print(format_strategy(session.strategy))
+    print()
+    workdir = default_workdir(session, args.out)
+    result = assemble(session, workdir, force=args.force, progress=_progress)
+    print()
+    print(format_assemble(result))
+    print()
+    eq = equilibrate(workdir, short=args.short, progress=_progress)
+    print(format_eq(eq))
+    if args.bench:
+        from adaptamem.bench import bench, format_bench
+
+        print()
+        print(format_bench(bench(workdir)))
+    return 0 if eq.qc.ok or args.short else 1
 
 
 def _validate(system_path: Path) -> int:
@@ -153,6 +202,10 @@ def _validate(system_path: Path) -> int:
     print(f"lipids     {lipids}")
     print(f"size       optimize={system.membrane.optimize_size}")
     return 0
+
+
+def _progress(msg: str) -> None:
+    print(f"  … {msg}", flush=True)
 
 
 if __name__ == "__main__":

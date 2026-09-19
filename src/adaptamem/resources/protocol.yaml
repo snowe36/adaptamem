@@ -5,7 +5,7 @@ water: TIP3P
 temperature_K: 310.0
 pressure_bar: 1.0
 timestep_fs: 4.0
-hydrogen_mass_amu: 1.5
+hydrogen_mass_amu: 4.0
 nonbonded_cutoff_nm: 1.0
 platform_preference: [CUDA, OpenCL, CPU]
 
