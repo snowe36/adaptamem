@@ -75,16 +75,17 @@ def assemble(
     log(format_orient(oriented).split("\n")[0])
 
     from openmm import XmlSerializer, unit
-    from openmm.app import PDBFile
+    from openmm.app import Modeller, PDBFile
 
     pad = session.box.safety_margin_nm
     if not session.system.membrane.optimize_size:
         pad = max(pad, 2.0)
         notes.append("optimize_size=false; padding floored at 2.0 nm")
 
-    pdb = PDBFile(str(oriented.path))
     ff = charmm36()
-    _protein_modeller(pdb, ff)  # fail fast on template match
+    log("add missing heavy atoms + CHARMM36 hydrogens")
+    protein, fix_notes = _load_protein(oriented.path, ff)
+    notes.extend(fix_notes)
 
     plat, plat_name = pick_platform(proto.platform_preference)
     pads = _pad_schedule(pad)
@@ -103,7 +104,7 @@ def assemble(
     ionic = float(session.system.membrane.ionic_strength_M)
     for pname, pobj in platforms:
         for p in pads:
-            modeller = _protein_modeller(pdb, ff)
+            modeller = Modeller(protein.topology, protein.positions)
             try:
                 log(f"addMembrane {lipid} platform={pname} pad={p:g} nm")
                 _add_membrane(modeller, ff, pobj, lipid, p, ionic)
@@ -212,17 +213,42 @@ def _lipid_for_session(session: Session) -> tuple[str, str | None]:
     return lipid, note
 
 
-def _protein_modeller(pdb: Any, ff: Any) -> Any:
-    from openmm.app import Modeller
+def _load_protein(oriented: Path, ff: Any) -> tuple[Any, list[str]]:
+    """Heavy atoms via PDBFixer (OXT/sidechains, not missing loops), then CHARMM36 H."""
+    from openmm.app import Modeller, PDBFile
 
-    modeller = Modeller(pdb.topology, pdb.positions)
+    notes: list[str] = []
+    try:
+        from pdbfixer import PDBFixer
+    except ImportError:
+        PDBFixer = None  # type: ignore[misc, assignment]
+
+    if PDBFixer is not None:
+        fixer = PDBFixer(filename=str(oriented))
+        fixer.findMissingResidues()
+        n_gap = sum(len(v) for v in (fixer.missingResidues or {}).values())
+        if n_gap:
+            notes.append(f"pdbfixer saw {n_gap} missing residue(s); not reconstructing")
+        fixer.missingResidues = {}
+        fixer.findMissingAtoms()
+        n_atoms = sum(len(v) for v in (fixer.missingAtoms or {}).values())
+        n_term = sum(len(v) for v in (fixer.missingTerminals or {}).values())
+        fixer.addMissingAtoms()
+        if n_atoms or n_term:
+            notes.append(f"pdbfixer added {n_atoms} missing + {n_term} terminal heavy atom(s)")
+        modeller = Modeller(fixer.topology, fixer.positions)
+    else:
+        pdb = PDBFile(str(oriented))
+        modeller = Modeller(pdb.topology, pdb.positions)
+        notes.append("pdbfixer not installed; hydrogens only")
+
     try:
         modeller.addHydrogens(ff)
     except ValueError as exc:
         raise RefuseError(
             f"CHARMM36 could not match a residue (missing heavy atoms?): {exc}"
         ) from exc
-    return modeller
+    return modeller, notes
 
 
 def _pad_schedule(min_pad: float) -> list[float]:

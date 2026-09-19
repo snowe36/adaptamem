@@ -9,6 +9,21 @@ from adaptamem.errors import RefuseError
 from adaptamem.schema import Protocol
 
 OPENMM_LIPIDS = ("POPC", "POPE", "DLPC", "DLPE", "DMPC", "DOPC", "DPPC")
+# CHARMM36 addMembrane patches store lipids as 3-letter names.
+LIPID_RESIDUES = {
+    "POPC",
+    "POPE",
+    "POP",
+    "DOPC",
+    "DOP",
+    "DPPC",
+    "DPP",
+    "DLPC",
+    "DLPE",
+    "DLP",
+    "DMPC",
+    "DMP",
+}
 MISSING_OPENMM = "OpenMM is not installed. pip install 'adaptamem[sim]'"
 
 
@@ -135,6 +150,7 @@ def scorecard(
     potential_kj: float,
     temperature_K: float | None,
     target_T: float,
+    check_temperature: bool = True,
 ) -> QC:
     from openmm import unit
 
@@ -145,8 +161,7 @@ def scorecard(
     lx = a[0].value_in_unit(unit.nanometer)
     ly = b[1].value_in_unit(unit.nanometer)
     lz = c[2].value_in_unit(unit.nanometer)
-    lipid_names = set(OPENMM_LIPIDS)
-    n_lipid = sum(1 for res in topology.residues() if res.name in lipid_names)
+    n_lipid = sum(1 for res in topology.residues() if res.name in LIPID_RESIDUES)
     apl = (lx * ly) / (n_lipid / 2.0) if n_lipid >= 2 else None
     thickness = _phosphate_thickness_nm(topology, positions)
     notes: list[str] = []
@@ -154,13 +169,20 @@ def scorecard(
     if not math_isfinite(potential_kj):
         notes.append("potential is not finite")
         ok = False
+    if n_lipid < 2:
+        notes.append("no lipid residues in topology")
+        ok = False
     if apl is not None and not (0.50 <= apl <= 0.85):
         notes.append(f"APL {apl:.3f} nm² outside 0.50–0.85")
         ok = False
     if thickness is not None and not (2.8 <= thickness <= 5.2):
         notes.append(f"thickness {thickness:.2f} nm outside 2.8–5.2")
         ok = False
-    if temperature_K is not None and abs(temperature_K - target_T) > 25:
+    if (
+        check_temperature
+        and temperature_K is not None
+        and abs(temperature_K - target_T) > 25
+    ):
         notes.append(f"T {temperature_K:.0f} K vs target {target_T:.0f}")
         ok = False
     if not notes:
@@ -182,9 +204,8 @@ def _phosphate_thickness_nm(topology: Any, positions: Any) -> float | None:
 
     zs: list[float] = []
     pos_nm = positions.value_in_unit(unit.nanometer)
-    lipid_names = set(OPENMM_LIPIDS)
     for atom in topology.atoms():
-        if atom.name == "P" and atom.residue.name in lipid_names:
+        if atom.name == "P" and atom.residue.name in LIPID_RESIDUES:
             zs.append(float(pos_nm[atom.index][2]))
     if len(zs) < 4:
         return None
@@ -199,11 +220,11 @@ def math_isfinite(x: float) -> bool:
     return x == x and abs(x) != float("inf")
 
 
-def kinetic_temperature(state: Any, n_atoms: int) -> float:
+def kinetic_temperature(state: Any, n_atoms: int, system: Any | None = None) -> float:
     from openmm import unit
 
     ke = state.getKineticEnergy().value_in_unit(unit.kilojoule_per_mole)
-    # 3N/2 kT; kB in kJ/mol/K
     kb = 0.008314462618
-    dof = max(3 * n_atoms - 6, 1)
+    n_c = system.getNumConstraints() if system is not None else 0
+    dof = max(3 * n_atoms - n_c - 3, 1)
     return 2.0 * ke / (dof * kb)

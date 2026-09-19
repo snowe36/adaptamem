@@ -18,6 +18,14 @@ def test_protocol_hmr_is_4_amu():
     assert p.eq_timestep_fs == 4.0
 
 
+def test_charmm_patch_lipid_residue_names():
+    from adaptamem.sim import LIPID_RESIDUES
+
+    assert "POP" in LIPID_RESIDUES
+    assert "POPC" in LIPID_RESIDUES
+    assert "HOH" not in LIPID_RESIDUES
+
+
 def test_majority_lipid_and_mix_note():
     name, note = openmm_lipid_type({"POPC": 0.7, "POPE": 0.3})
     assert name == "POPC"

@@ -57,26 +57,73 @@ def equilibrate(
     plat, plat_name = pick_platform(proto.platform_preference)
     n_atoms = pdb.topology.getNumAtoms()
 
-    k_rest = 1000.0  # kJ/mol/nm^2 on CA
+    k_rest = 1000.0  # kJ/mol/nm² on CA
     stages: list[str] = []
+    platforms = _platform_ladder(proto.platform_preference)
+    box = pdb.topology.getPeriodicBoxVectors()
 
-    def _run(label: str, sys_obj: Any, positions: Any, steps: int, minimize: bool) -> tuple[Any, float]:
-        integ = langevin(proto)
-        sim = Simulation(pdb.topology, sys_obj, integ, plat)
+    def _sim(sys_obj: Any, pobj: Any, timestep_fs: float, positions: Any) -> Any:
+        integ = langevin(proto, timestep_fs=timestep_fs)
+        sim = Simulation(pdb.topology, sys_obj, integ, pobj)
         sim.context.setPositions(positions)
-        box = pdb.topology.getPeriodicBoxVectors()
         if box is not None:
             sim.context.setPeriodicBoxVectors(*box)
+        return sim
+
+    def _run(label: str, sys_obj: Any, positions: Any, steps: int, minimize: bool) -> tuple[Any, float, float]:
+        last: Exception | None = None
+        min_pos = positions
         if minimize:
-            log(f"{label}: minimize")
-            sim.minimizeEnergy(maxIterations=200 if short else 1500)
-        if steps > 0:
-            log(f"{label}: {steps} steps @ {proto.eq_timestep_fs:g} fs")
-            sim.step(steps)
-        state = sim.context.getState(getPositions=True, getEnergy=True)
-        e = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
-        stages.append(label)
-        return state.getPositions(), e
+            ok = False
+            for pname, pobj in platforms:
+                try:
+                    log(f"{label}: minimize ({pname})")
+                    sim = _sim(sys_obj, pobj, 1.0, positions)
+                    sim.minimizeEnergy(maxIterations=200 if short else 1500)
+                    min_pos = sim.context.getState(getPositions=True).getPositions()
+                    if _has_nan(min_pos):
+                        raise RuntimeError("NaN after minimize")
+                    ok = True
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last = exc
+                    log(f"{label} minimize failed on {pname}: {exc}")
+            if not ok:
+                raise RefuseError(f"{label} minimize failed: {last}")
+
+        settle = 50 if short else 2000  # 0.05 ps vs 2 ps at 1 fs
+        last = None
+        for pname, pobj in platforms:
+            try:
+                sim = _sim(sys_obj, pobj, 1.0, min_pos)
+                sim.context.setVelocitiesToTemperature(proto.temperature_K * unit.kelvin)
+                if settle:
+                    log(f"{label}: {settle} steps @ 1 fs ({pname})")
+                    sim.step(settle)
+                pos = sim.context.getState(getPositions=True).getPositions()
+                if _has_nan(pos):
+                    raise RuntimeError("NaN after 1 fs settle")
+                if steps > 0 and not short:
+                    sim4 = _sim(sys_obj, pobj, proto.eq_timestep_fs, pos)
+                    sim4.context.setVelocitiesToTemperature(proto.temperature_K * unit.kelvin)
+                    log(f"{label}: {steps} steps @ {proto.eq_timestep_fs:g} fs ({pname})")
+                    sim4.step(steps)
+                    state = sim4.context.getState(getPositions=True, getEnergy=True)
+                else:
+                    state = sim.context.getState(getPositions=True, getEnergy=True)
+                pos = state.getPositions()
+                if _has_nan(pos):
+                    raise RuntimeError("NaN coordinates")
+                e = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+                t = kinetic_temperature(state, n_atoms, sys_obj)
+                nonlocal plat, plat_name
+                plat, plat_name = pobj, pname
+                stages.append(label)
+                return pos, float(e), t
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                log(f"{label} dynamics failed on {pname}: {exc}")
+        raise RefuseError(f"{label} failed: {last}")
 
     nvt_sys = strip_barostat(system)
     _restrain_ca(nvt_sys, pdb.topology, pdb.positions, k_rest)
@@ -90,17 +137,31 @@ def equilibrate(
         npt_steps = _steps(proto.eq_npt_restrained_ns, proto.eq_timestep_fs)
         free_steps = _steps(proto.eq_free_membrane_ns, proto.eq_timestep_fs)
 
-    pos, _e = _run("nvt_restrained", nvt_sys, pdb.positions, nvt_steps, minimize=True)
+    pos, energy, temp = _run("nvt_restrained", nvt_sys, pdb.positions, nvt_steps, minimize=True)
     if npt_steps:
         npt_sys = _clone(system)
         _restrain_ca(npt_sys, pdb.topology, pos, k_rest)
-        pos, _e = _run("npt_restrained", npt_sys, pos, npt_steps, minimize=False)
+        pos, energy, temp = _run("npt_restrained", npt_sys, pos, npt_steps, minimize=False)
 
-    qc = _qc_now(pdb.topology, pos, n_atoms, proto, system)
+    qc = scorecard(
+        pdb.topology,
+        pos,
+        potential_kj=energy,
+        temperature_K=temp,
+        target_T=proto.temperature_K,
+        check_temperature=not short,
+    )
     if (not qc.ok) and free_steps and proto.eq_stop_on_qc:
         log("QC not ready — free membrane continuation")
-        pos, _e = _run("free_membrane", system, pos, free_steps, minimize=False)
-        qc = _qc_now(pdb.topology, pos, n_atoms, proto, system)
+        pos, energy, temp = _run("free_membrane", system, pos, free_steps, minimize=False)
+        qc = scorecard(
+            pdb.topology,
+            pos,
+            potential_kj=energy,
+            temperature_K=temp,
+            target_T=proto.temperature_K,
+            check_temperature=True,
+        )
     elif qc.ok and proto.eq_stop_on_qc:
         log("QC ok — skipping free_membrane_ns")
         stages.append("stop_on_qc")
@@ -162,6 +223,26 @@ def _clone(system: Any) -> Any:
     return XmlSerializer.deserialize(XmlSerializer.serialize(system))
 
 
+def _platform_ladder(preference: list[str]) -> list[tuple[str, Any]]:
+    from openmm import Platform
+
+    plat, name = pick_platform(preference)
+    out = [(name, plat)]
+    if name != "CPU":
+        try:
+            out.append(("CPU", Platform.getPlatformByName("CPU")))
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def _has_nan(positions: Any) -> bool:
+    from openmm import unit
+
+    xyz = positions.value_in_unit(unit.nanometer)
+    return any(p[0] != p[0] or p[1] != p[1] or p[2] != p[2] for p in xyz)
+
+
 def _restrain_ca(system: Any, topology: Any, positions: Any, k: float) -> None:
     from openmm import CustomExternalForce, unit
 
@@ -177,26 +258,3 @@ def _restrain_ca(system: Any, topology: Any, positions: Any, k: float) -> None:
         x, y, z = pos_nm[atom.index]
         force.addParticle(atom.index, [float(x), float(y), float(z)])
     system.addForce(force)
-
-
-def _qc_now(topology, positions, n_atoms, proto, system) -> QC:
-    from openmm import unit
-    from openmm.app import Simulation
-
-    integ = langevin(proto)
-    plat, _ = pick_platform(proto.platform_preference)
-    sim = Simulation(topology, strip_barostat(system), integ, plat)
-    sim.context.setPositions(positions)
-    box = topology.getPeriodicBoxVectors()
-    if box is not None:
-        sim.context.setPeriodicBoxVectors(*box)
-    sim.step(200)
-    state = sim.context.getState(getEnergy=True, getPositions=True)
-    e = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
-    return scorecard(
-        topology,
-        state.getPositions(),
-        potential_kj=float(e),
-        temperature_K=kinetic_temperature(state, n_atoms),
-        target_T=proto.temperature_K,
-    )
