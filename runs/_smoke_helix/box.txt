@@ -1,3 +1,3 @@
-BOX PLAN  8.28 × 8.28 × 5.6 nm
-~211 lipids  ~5485 waters  ~61662 atoms
+BOX PLAN  8.34 × 8.34 × 5.6 nm
+~214 lipids  ~5564 waters  ~62764 atoms
 1 TM spans; lateral pad 1.2 nm, water 1.2 nm

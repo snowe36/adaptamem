@@ -75,7 +75,7 @@ def assemble(
     log(format_orient(oriented).split("\n")[0])
 
     from openmm import XmlSerializer, unit
-    from openmm.app import Modeller, PDBFile
+    from openmm.app import PDBFile
 
     pad = session.box.safety_margin_nm
     if not session.system.membrane.optimize_size:
@@ -84,9 +84,7 @@ def assemble(
 
     pdb = PDBFile(str(oriented.path))
     ff = charmm36()
-    modeller = Modeller(pdb.topology, pdb.positions)
-    log("addHydrogens")
-    modeller.addHydrogens(ff)
+    _protein_modeller(pdb, ff)  # fail fast on template match
 
     plat, plat_name = pick_platform(proto.platform_preference)
     pads = _pad_schedule(pad)
@@ -105,8 +103,7 @@ def assemble(
     ionic = float(session.system.membrane.ionic_strength_M)
     for pname, pobj in platforms:
         for p in pads:
-            modeller = Modeller(pdb.topology, pdb.positions)
-            modeller.addHydrogens(ff)
+            modeller = _protein_modeller(pdb, ff)
             try:
                 log(f"addMembrane {lipid} platform={pname} pad={p:g} nm")
                 _add_membrane(modeller, ff, pobj, lipid, p, ionic)
@@ -213,6 +210,19 @@ def _lipid_for_session(session: Session) -> tuple[str, str | None]:
             "OpenMM addMembrane is single-lipid in Phase 1"
         )
     return lipid, note
+
+
+def _protein_modeller(pdb: Any, ff: Any) -> Any:
+    from openmm.app import Modeller
+
+    modeller = Modeller(pdb.topology, pdb.positions)
+    try:
+        modeller.addHydrogens(ff)
+    except ValueError as exc:
+        raise RefuseError(
+            f"CHARMM36 could not match a residue (missing heavy atoms?): {exc}"
+        ) from exc
+    return modeller
 
 
 def _pad_schedule(min_pad: float) -> list[float]:

@@ -11,7 +11,7 @@ fewer timesteps
   - branch uncertain states, drop redundant walkers
   - stop when U(objective) < precision
 fewer expensive atoms
-  - geometry box ~8.28 nm lateral, ~61662 atoms
+  - geometry box ~8.34 nm lateral, ~62764 atoms
   - water pad from protein extent, not a cubic CHARMM-GUI default
 why
   - CVs not assumed known

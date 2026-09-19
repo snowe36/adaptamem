@@ -1,5 +1,5 @@
 STRUCTURE REPORT  _helix.pdb
-40 residues  160 protein atoms  chains A
+40 residues  320 protein atoms  chains A
 1 candidate TM spans  0 disulfides  0 ligand types
   TM  A 1-40
         1 candidate TM span(s)
