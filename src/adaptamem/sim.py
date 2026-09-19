@@ -64,7 +64,7 @@ def pick_platform(preference: list[str] | None = None) -> tuple[Any, str]:
 
 def make_hmr_system(topology: Any, protocol: Protocol) -> Any:
     from openmm import MonteCarloMembraneBarostat, unit
-    from openmm.app import HBonds, PME
+    from openmm.app import PME, HBonds
 
     ff = charmm36()
     hmass = float(protocol.hydrogen_mass_amu) * unit.amu

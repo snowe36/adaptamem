@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from adaptamem.errors import RefuseError
@@ -67,7 +67,7 @@ def bench(
     physics = str(assemble_meta.get("physics") or "same_physics")
     payload = {
         "policy": "0.1",
-        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "created_utc": datetime.now(UTC).isoformat(),
         "ns_per_day": ns_per_day,
         "steps": n_steps,
         "timestep_fs": proto.eq_timestep_fs,

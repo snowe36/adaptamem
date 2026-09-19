@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from adaptamem.errors import RefuseError
 from adaptamem.schema import Protocol, load_protocol
@@ -115,7 +116,7 @@ def equilibrate(
 
     payload = {
         "policy": "0.1",
-        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "created_utc": datetime.now(UTC).isoformat(),
         "platform": plat_name,
         "short": short,
         "stages": stages,

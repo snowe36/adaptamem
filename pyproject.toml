@@ -41,3 +41,4 @@ ignore = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["adaptamem"]
+known-local-folder = ["pdbutil"]

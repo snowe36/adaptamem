@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from adaptamem.box import format_box
 from adaptamem.doctor import format_report
@@ -43,6 +44,10 @@ def assemble(
     progress: Progress | None = None,
 ) -> AssembleResult:
     session.gate_assemble(force=force)
+    lipid, mix_note = _lipid_for_session(session)
+    from adaptamem.sim import charmm36, make_hmr_system, pick_platform, require_openmm
+
+    require_openmm()
     proto = protocol or load_protocol()
     log = progress or (lambda _m: None)
     workdir = Path(workdir)
@@ -52,7 +57,6 @@ def assemble(
     (workdir / "strategy.txt").write_text(format_strategy(session.strategy) + "\n")
     (workdir / "box.txt").write_text(format_box(session.box) + "\n")
 
-    lipid, mix_note = _lipid_for_session(session)
     physics = session.strategy.physics
     notes: list[str] = []
     if mix_note:
@@ -70,14 +74,6 @@ def assemble(
     )
     log(format_orient(oriented).split("\n")[0])
 
-    from adaptamem.sim import (
-        charmm36,
-        make_hmr_system,
-        pick_platform,
-        require_openmm,
-    )
-
-    require_openmm()
     from openmm import XmlSerializer, unit
     from openmm.app import Modeller, PDBFile
 
@@ -149,7 +145,7 @@ def assemble(
     )
     payload: dict[str, Any] = {
         "policy": "0.1",
-        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "created_utc": datetime.now(UTC).isoformat(),
         "system": session.system.name,
         "structure": str(session.system.structure),
         "lipid": lipid,
