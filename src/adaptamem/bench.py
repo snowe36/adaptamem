@@ -71,18 +71,37 @@ def bench(
     box = pdb.topology.getPeriodicBoxVectors()
     if box is not None:
         sim.context.setPeriodicBoxVectors(*box)
+    # Stabilize on CPU, then time the preferred platform (CUDA on a 4090).
     try:
-        sim.minimizeEnergy(maxIterations=50)
+        cpu, _ = pick_platform(["CPU"])
+        sim_c = Simulation(pdb.topology, system, langevin(proto, timestep_fs=1.0), cpu)
+        sim_c.context.setPositions(pdb.positions)
+        if box is not None:
+            sim_c.context.setPeriodicBoxVectors(*box)
+        sim_c.minimizeEnergy(maxIterations=400)
+        pos = sim_c.context.getState(getPositions=True).getPositions()
+        sim.context.setPositions(pos)
+    except Exception:  # noqa: BLE001
+        pos = pdb.positions
+    from openmm import unit as _unit
+
+    try:
+        sim.context.setVelocitiesToTemperature(proto.temperature_K * _unit.kelvin)
         sim.step(min(200, n_steps))
     except Exception:  # noqa: BLE001
         plat, plat_name = pick_platform(["CPU"])
         gpu = hardware_label(plat, plat_name)
         sim = Simulation(pdb.topology, system, langevin(proto), plat)
-        sim.context.setPositions(pdb.positions)
+        sim.context.setPositions(pos)
         if box is not None:
             sim.context.setPeriodicBoxVectors(*box)
-        sim.minimizeEnergy(maxIterations=50)
+        sim.minimizeEnergy(maxIterations=200)
+        sim.context.setVelocitiesToTemperature(proto.temperature_K * _unit.kelvin)
         sim.step(min(200, n_steps))
+    try:
+        gpu = sim.context.getPlatform().getPropertyValue(sim.context, "DeviceName")
+    except Exception:  # noqa: BLE001
+        pass
     t0 = time.perf_counter()
     sim.step(n_steps)
     elapsed = time.perf_counter() - t0

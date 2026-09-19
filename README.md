@@ -80,6 +80,14 @@ adaptamem plan  tests/fixtures/helix.pdb --objective discover-states
 
 Optional physics: `uv sync --extra dev --extra sim` then `adaptamem assemble …` / `run`.
 
+GPU throughput on a CUDA box (CPU-minimize, then time CUDA; caches the assembled system so a second run is the timed loop):
+
+```bash
+make gpu
+# or: python scripts/gpu_job.py --out runs/gpu --steps 4000
+# quote ns/day only from runs/gpu/bench.json
+```
+
 ---
 
 ## Objective
@@ -140,6 +148,7 @@ Recipes in [`examples/`](examples/) are optional hints, not the engine.
 |---------|-------|----------------|
 | `make test` / `uv run pytest -q` | `[dev]` | doctor, box, strategy, mix, diagnostics, sample loop, oracle/compare |
 | `bash scripts/reproduce.sh` | uv or venv | lint + tests + doctor/plan on the helix fixture |
+| `make gpu` / `python scripts/gpu_job.py` | CUDA + `openmm`/`pdbfixer` | CHARMM36 throughput JSON; no repo install |
 | `adaptamem assemble --out runs/job` | `[sim]` (OpenMM) | compact bilayer + 4 fs HMR system |
 | `adaptamem equilibrate runs/job` | assembled system | QC scorecard (APL, thickness) |
 | `adaptamem bench runs/job` | assembled system | throughput JSON (not U/GPU-hour) |
@@ -162,6 +171,7 @@ tests/             unit tests (OpenMM skipped if missing)
 tests/fixtures/    helix.pdb
 examples/          optional YAML hints
 docs/architecture.md
+scripts/gpu_job.py standalone CUDA throughput
 scripts/reproduce.sh
 ```
 

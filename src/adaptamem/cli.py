@@ -57,6 +57,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Append this workdir as one ns/day(N) point to ladder.json",
     )
 
+    p_gpu = sub.add_parser("gpu", help="One-shot CHARMM36 throughput (CPU min, CUDA time)")
+    p_gpu.add_argument("--out", type=Path, default=Path("runs/gpu"))
+    p_gpu.add_argument("--steps", type=int, default=4000)
+    p_gpu.add_argument("--pad", type=float, default=1.2)
+    p_gpu.add_argument("--n-leu", type=int, default=20)
+    p_gpu.add_argument("--rebuild", action="store_true")
+    p_gpu.add_argument("--pads", default="")
+
     p_prod = sub.add_parser("produce", help="Production MD; streaming CVs, XTC secondary")
     p_prod.add_argument("workdir", type=Path)
     p_prod.add_argument("--ns", type=float, default=None, help="Hard cap on simulated ns")
@@ -132,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
             return _equilibrate(args.workdir, args.short)
         if args.cmd == "bench":
             return _bench(args.workdir, args.steps, args.ladder)
+        if args.cmd == "gpu":
+            return _gpu(args)
         if args.cmd == "produce":
             return _produce(args)
         if args.cmd == "run":
@@ -229,6 +239,38 @@ def _equilibrate(workdir: Path, short: bool) -> int:
     result = equilibrate(workdir, short=short, progress=_progress)
     print(format_eq(result))
     return 0 if result.qc.ok or short else 1
+
+
+def _gpu(args: argparse.Namespace) -> int:
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    candidates = [
+        Path(__file__).resolve().parents[2] / "scripts" / "gpu_job.py",
+        Path.cwd() / "scripts" / "gpu_job.py",
+    ]
+    script = next((p for p in candidates if p.is_file()), None)
+    if script is None:
+        raise RefuseError("scripts/gpu_job.py not found; run from the repo", code="NOT_READY")
+    spec = spec_from_file_location("adaptamem_gpu_job", script)
+    if spec is None or spec.loader is None:
+        raise RefuseError(f"could not load {script}", code="NOT_READY")
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    argv = [
+        "--out",
+        str(args.out),
+        "--steps",
+        str(args.steps),
+        "--pad",
+        str(args.pad),
+        "--n-leu",
+        str(args.n_leu),
+    ]
+    if args.rebuild:
+        argv.append("--rebuild")
+    if args.pads:
+        argv.extend(["--pads", args.pads])
+    return int(mod.main(argv) or 0)
 
 
 def _bench(workdir: Path, steps: int | None, ladder: bool) -> int:
