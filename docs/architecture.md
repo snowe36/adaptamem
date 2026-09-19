@@ -77,4 +77,4 @@ Phase order: trustworthy PDB→MD (tier 1) → adaptive sampler proved against a
 - **Two clocks.** Campaign wall-clock ≠ replica ns/day.
 - **Do not saturate-batch** a 600k-atom complex; batching is for small walkers.
 
-Implemented now: doctor, geometry box, strategy labeler, TM-axis orient, compact OpenMM `addMembrane`, CHARMM36 HMR 4 fs system, eq scorecard, ns/day bench. Adaptive sampler and hybrid AA/CG are not built.
+Implemented now: doctor, geometry box, strategy, TM-axis orient, optional local PPM, compact OpenMM addMembrane, POPE:POPG swap, CHARMM36 HMR 4 fs, eq scorecard, ns/day bench, walker scheduler, hybrid plan (annular lipids stay AA). Martini execution is not built.

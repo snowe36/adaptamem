@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite this repository. Simulations
+  should also cite the force field and the structure source.
+title: "adaptamem: question-conditioned membrane-protein MD"
+type: software
+version: "0.1.0"
+authors:
+  - family-names: Snow
+    given-names: Eric
+license: MIT
+repository-code: "https://github.com/snowe36/adaptamem"
+abstract: >-
+  Chooses physical resolution, box, and sampling for a membrane-protein
+  question at minimum cost. ns/day comparisons are only valid inside
+  the same physics class.
+keywords:
+  - molecular dynamics
+  - membrane protein
+  - OpenMM
+  - CHARMM36
+  - adaptive sampling

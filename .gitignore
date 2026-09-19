@@ -10,6 +10,7 @@ build/
 data/
 out/
 runs/
+.env
 *.xtc
 *.dcd
 *.chk

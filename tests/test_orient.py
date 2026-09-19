@@ -29,7 +29,8 @@ def test_orient_z_helix_stays_on_z(tmp_path: Path):
     assert result.span_nm[2] > result.span_nm[0]
 
 
-def test_orient_ppm_refuses(tmp_path: Path):
+def test_orient_ppm_refuses(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("adaptamem.ppm.find_immers", lambda immers_dir=None: None)
     pdb = helix_pdb(tmp_path / "z.pdb")
     report = audit(pdb)
     try:
@@ -37,6 +38,6 @@ def test_orient_ppm_refuses(tmp_path: Path):
             pdb, report, Orientation(method="ppm"), tmp_path / "out.pdb"
         )
     except RefuseError as exc:
-        assert "ppm" in exc.message
+        assert "immers" in exc.message.lower() or "ppm" in exc.message.lower()
         return
     raise AssertionError("expected RefuseError")

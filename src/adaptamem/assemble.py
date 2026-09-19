@@ -12,6 +12,7 @@ from typing import Any
 from adaptamem.box import format_box
 from adaptamem.doctor import format_report
 from adaptamem.errors import RefuseError
+from adaptamem.lipids import apply_pope_popg_swap, plan_mix
 from adaptamem.orient import OrientResult, format_orient, orient_structure
 from adaptamem.schema import Protocol, load_protocol
 from adaptamem.session import Session
@@ -44,8 +45,18 @@ def assemble(
     progress: Progress | None = None,
 ) -> AssembleResult:
     session.gate_assemble(force=force)
-    lipid, mix_note = _lipid_for_session(session)
-    from adaptamem.sim import charmm36, make_hmr_system, pick_platform, require_openmm
+    mix = plan_mix(
+        session.system.membrane.lipids,
+        lateral_nm=session.box.lateral_nm,
+    )
+    lipid = mix.scaffold
+    from adaptamem.sim import (
+        LIPID_RESIDUES,
+        charmm36,
+        make_hmr_system,
+        pick_platform,
+        require_openmm,
+    )
 
     require_openmm()
     proto = protocol or load_protocol()
@@ -58,9 +69,8 @@ def assemble(
     (workdir / "box.txt").write_text(format_box(session.box) + "\n")
 
     physics = session.strategy.physics
-    notes: list[str] = []
-    if mix_note:
-        notes.append(mix_note)
+    notes: list[str] = list(mix.notes)
+    if mix.physics == PHYSICS_APPROX:
         physics = PHYSICS_APPROX
     if force and session.strategy.refuse:
         notes.append(f"human veto: {session.strategy.refuse}")
@@ -120,6 +130,22 @@ def assemble(
     if not built:
         raise RefuseError(f"addMembrane failed: {last}")
 
+    n_lipid = sum(1 for r in modeller.topology.residues() if r.name in LIPID_RESIDUES)
+    mix = plan_mix(
+        session.system.membrane.lipids,
+        n_lipid=n_lipid,
+        lateral_nm=session.box.lateral_nm,
+    )
+    swap_info: dict[str, Any] = {"n_swapped": 0}
+    if mix.n_swap and mix.swap_to == "POPG":
+        log(f"swap {mix.n_swap} lipids to POPG")
+        swap_info = apply_pope_popg_swap(modeller, mix.n_swap)
+        notes.append(
+            f"swapped {swap_info.get('n_swapped', 0)} → POPG "
+            f"(upper {swap_info.get('n_upper', 0)}, lower {swap_info.get('n_lower', 0)})"
+        )
+        physics = mix.physics
+
     log("createSystem HMR + membrane barostat")
     omm = make_hmr_system(modeller.topology, proto)
     assembled = workdir / "assembled.pdb"
@@ -147,6 +173,12 @@ def assemble(
         "system": session.system.name,
         "structure": str(session.system.structure),
         "lipid": lipid,
+        "mix": {
+            "fractions": mix.fractions,
+            "counts": mix.counts,
+            "scaffold": mix.scaffold,
+            "swap": swap_info,
+        },
         "platform": plat_name,
         "pad_nm": used_pad,
         "n_atoms": n_atoms,
@@ -199,18 +231,6 @@ def default_workdir(session: Session, out: Path | None) -> Path:
     if out is not None:
         return Path(out)
     return Path("runs") / session.system.name
-
-
-def _lipid_for_session(session: Session) -> tuple[str, str | None]:
-    from adaptamem.sim import openmm_lipid_type
-
-    lipid, note = openmm_lipid_type(session.system.membrane.lipids)
-    if note and session.objective.type == "membrane_environment":
-        raise RefuseError(
-            "membrane_environment needs the requested lipid mix; "
-            "OpenMM addMembrane is single-lipid in Phase 1"
-        )
-    return lipid, note
 
 
 def _load_protein(oriented: Path, ff: Any) -> tuple[Any, list[str]]:

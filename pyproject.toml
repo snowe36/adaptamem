@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "adaptamem"
 version = "0.1.0"
-description = "Choose resolution, configuration, and sampling for a membrane-protein question"
+description = "Question-conditioned membrane-protein MD — cheapest sufficient simulation, not a 100 ns default"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -34,6 +34,7 @@ pythonpath = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = [".venv", "data", "runs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

@@ -1,7 +1,8 @@
 """Put the transmembrane axis on z and the midplane at z = 0.
 
-Does not call PPM. `orientation.method: auto` uses TM-helix endpoints (Kyte–Doolittle
-spans from the doctor). `none` only translates. `ppm` is not implemented.
+`auto` uses TM-helix endpoints (Kyte–Doolittle spans). `ppm` runs local immers
+and refuses if the binary is missing — it is never silently replaced by auto.
+`none` only translates.
 """
 
 from __future__ import annotations
@@ -36,23 +37,34 @@ def orient_structure(
     dest: Path,
 ) -> OrientResult:
     method = (orientation.method or "auto").lower()
-    if method in {"ppm", "opm"}:
-        raise RefuseError(
-            f"orientation.method={method} is not implemented; "
-            "use auto, or none if the PDB is already membrane-aligned"
-        )
-    atoms = select_protein(load_atoms(structure))
-    if not atoms:
-        raise RefuseError("no protein ATOM records to orient")
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
 
-    if method in {"none", "file", "given"}:
+    if method == "opm":
+        raise RefuseError("orientation.method=opm is not implemented; use ppm or auto")
+    if method == "ppm":
+        from adaptamem.ppm import run_immers
+
+        raw = dest.with_name(dest.stem + "_immers.pdb")
+        run_immers(structure, raw, topology="in")
+        atoms = select_protein(load_atoms(raw))
+        if not atoms:
+            raise RefuseError("PPM immers produced no protein ATOM records")
         R = _eye()
         axis = (0.0, 0.0, 1.0)
-        used = "none"
+        used = "ppm3_local_immers"
     else:
-        axis = _tm_axis(atoms, report.tm_spans, report.tm_ca_angstrom)
-        R = _rotation_aligning(axis, (0.0, 0.0, 1.0))
-        used = "auto_tm_axis"
+        atoms = select_protein(load_atoms(structure))
+        if not atoms:
+            raise RefuseError("no protein ATOM records to orient")
+        if method in {"none", "file", "given"}:
+            R = _eye()
+            axis = (0.0, 0.0, 1.0)
+            used = "none"
+        else:
+            axis = _tm_axis(atoms, report.tm_spans, report.tm_ca_angstrom)
+            R = _rotation_aligning(axis, (0.0, 0.0, 1.0))
+            used = "auto_tm_axis"
 
     if (orientation.topology or "in").lower() == "out":
         R = _mul(_diag(1.0, 1.0, -1.0), R)
@@ -80,8 +92,6 @@ def orient_structure(
                 het=a.het,
             )
         )
-    dest = Path(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
     write_pdb(
         out_atoms,
         dest,

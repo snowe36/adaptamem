@@ -81,6 +81,7 @@ def choose(
     if objective.type == "membrane_environment":
         reasons.append("MH-style membrane question: annular lipids stay atomistic")
         fewer_expensive_atoms.append("do not CG or implicit-ize first-shell lipids")
+        fewer_expensive_atoms.append("hybrid bulk only beyond ~1.2 nm annular shell")
         sampling = "adaptive" if objective.adaptive else "conventional"
         fewer_steps.append("stop on local thickness/order/water CIs")
     elif objective.type == "comparison":

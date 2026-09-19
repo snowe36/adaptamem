@@ -57,6 +57,16 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--short", action="store_true")
     p_run.add_argument("--bench", action="store_true")
 
+    p_sample = sub.add_parser("sample", help="Walker schedule (YAML CVs; n_walkers is an output)")
+    _job_args(p_sample)
+    p_sample.add_argument("--out", type=Path, default=None)
+    p_sample.add_argument("--traces", type=Path, default=None, help="JSON map of observable → values")
+
+    p_hyb = sub.add_parser("hybrid", help="AA/CG plan; annular lipids stay AA")
+    _job_args(p_hyb)
+    p_hyb.add_argument("--out", type=Path, default=None)
+    p_hyb.add_argument("--bulk", default="CG", help="CG | AA | implicit")
+
     args = parser.parse_args(argv)
     try:
         if args.cmd == "init":
@@ -75,6 +85,10 @@ def main(argv: list[str] | None = None) -> int:
             return _bench(args.workdir, args.steps)
         if args.cmd == "run":
             return _run(args)
+        if args.cmd == "sample":
+            return _sample(args)
+        if args.cmd == "hybrid":
+            return _hybrid(args)
     except RefuseError as exc:
         print(f"REFUSE  {exc.message}", file=sys.stderr)
         return 2
@@ -189,6 +203,41 @@ def _run(args: argparse.Namespace) -> int:
         print()
         print(format_bench(bench(workdir)))
     return 0 if eq.qc.ok or args.short else 1
+
+
+def _sample(args: argparse.Namespace) -> int:
+    import json
+
+    from adaptamem.sample import format_schedule, schedule, write_schedule
+
+    session = load_session(
+        args.input, cli_objective=args.objective, budget_hours=args.budget_hours
+    )
+    traces = None
+    if args.traces is not None:
+        traces = json.loads(Path(args.traces).read_text())
+    sched = schedule(
+        session.objective, session.box, budget_hours=args.budget_hours, traces=traces
+    )
+    workdir = default_workdir(session, args.out)
+    write_schedule(sched, workdir, extra={"objective": session.objective.type})
+    print(format_schedule(sched))
+    print(f"wrote {workdir / 'sample.json'}")
+    return 0
+
+
+def _hybrid(args: argparse.Namespace) -> int:
+    from adaptamem.hybrid import format_hybrid, plan_hybrid, write_hybrid
+
+    session = load_session(
+        args.input, cli_objective=args.objective, budget_hours=args.budget_hours
+    )
+    plan = plan_hybrid(session.objective, session.strategy, bulk=args.bulk)
+    workdir = default_workdir(session, args.out)
+    write_hybrid(plan, workdir, extra={"objective": session.objective.type})
+    print(format_hybrid(plan))
+    print(f"wrote {workdir / 'hybrid.json'}")
+    return 0 if plan.ok else 2
 
 
 def _validate(system_path: Path) -> int:

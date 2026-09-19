@@ -5,7 +5,8 @@ import pytest
 from adaptamem.assemble import assemble, default_workdir
 from adaptamem.cli import main
 from adaptamem.errors import RefuseError
-from adaptamem.schema import Membrane, System, load_protocol
+from adaptamem.lipids import plan_mix
+from adaptamem.schema import load_protocol
 from adaptamem.session import load_session
 from adaptamem.sim import openmm_available, openmm_lipid_type
 
@@ -26,11 +27,13 @@ def test_charmm_patch_lipid_residue_names():
     assert "HOH" not in LIPID_RESIDUES
 
 
-def test_majority_lipid_and_mix_note():
-    name, note = openmm_lipid_type({"POPC": 0.7, "POPE": 0.3})
+def test_majority_lipid_single_component():
+    name, note = openmm_lipid_type({"POPC": 1.0})
     assert name == "POPC"
-    assert note is not None
-    assert "approximation" in note
+    assert note is None
+    plan = plan_mix({"POPC": 1.0})
+    assert plan.scaffold == "POPC"
+    assert plan.n_swap == 0
 
 
 def test_unknown_lipid_refuses():
@@ -46,20 +49,6 @@ def test_assemble_refuses_no_tm(tmp_path: Path):
     pdb = helix_pdb(tmp_path / "lys.pdb", n=12, resname="LYS")
     session = load_session(pdb, cli_objective="conventional")
     with pytest.raises(RefuseError, match="transmembrane"):
-        assemble(session, tmp_path / "out")
-
-
-def test_membrane_environment_refuses_lipid_mix(tmp_path: Path):
-    pdb = helix_pdb(tmp_path / "leu.pdb")
-    session = load_session(pdb, cli_objective="membrane-environment")
-    session.system = System(
-        name=session.system.name,
-        structure=session.system.structure,
-        orientation=session.system.orientation,
-        membrane=Membrane(lipids={"POPC": 0.7, "POPE": 0.3}),
-        objective=session.objective,
-    )
-    with pytest.raises(RefuseError, match="lipid mix"):
         assemble(session, tmp_path / "out")
 
 

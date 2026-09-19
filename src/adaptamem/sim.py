@@ -14,6 +14,7 @@ LIPID_RESIDUES = {
     "POPC",
     "POPE",
     "POP",
+    "POPG",
     "DOPC",
     "DOP",
     "DPPC",
