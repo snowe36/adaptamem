@@ -98,3 +98,32 @@ This is the only method allowed to call the GPU after the teacher set.
 5. MSM on those shots. Latent on the same traces. Active learning only if bins are hungry.
 
 Do not implement a fourth walker policy in the gap.
+
+## Six weeks
+
+| Week | Step | GPU |
+|------|------|-----|
+| 1 | Inference-engine product; crystal-only `compress`/`infer`; `eq.pdb` required | frozen |
+| 2 | CPU-only 2RH1+3SN6: `tm6_ic`, contacts, heterogeneity, unknowns | frozen |
+| 3 | Matching CUDA 12.8 eq; independent 2 ns-class teachers from both starts | named shot only |
+| 4 | Extra shots only if `uncertain_regions`; occupancy vs π | ≤100 ns / 6.9 h |
+| 5 | Held-out conventional freeze from both starts (`oracle-freeze --also`) | reference, not product |
+| 6 | Score `cpu_only` vs `cpu_first` vs conventional at ε=0.2 nm | claim only if math holds |
+
+## Go / no-go (Week 6)
+
+Hardware GPU teacher is **not purchased** until `eq.pdb` exists on the matching stack. Synthetic two-basin CI already holds 10×. Real β2AR claim waits on Weeks 3–5 traces.
+
+| Decision | When |
+|----------|------|
+| Keep β2AR | crystal span ≥ ε (0.70 nm) and teacher stack produces without NaN |
+| Pick a slower CV | conventional span still < ε |
+| Stop GPU spend | packing/CUDA contract still broken |
+
+Not inferred from crystals or a short teacher: rates, pathways, timescales, mutation/ligand Δ. Sequence-in remains `NOT_READY`.
+
+## After β2AR (Phase 3–4)
+
+The six-week ladder is one protein. The destination is a **transferable dynamics prior**: train on other membrane proteins, evaluate on a protein that was not in the corpus, predict CVs / ensembles / uncertainty — not a fake trajectory — and spend MD only where that uncertainty is high.
+
+The scientific constraint is validation. A corpus can learn conserved switches and membrane motions a tiny β2AR teacher will never see. That does not count unless the evaluation protein's conventional trajectory was held out, the uncertainty is calibrated, and compute is substantially below conventional MD. Memorizing the training set is not transfer. `LEAKAGE` still applies.

@@ -22,7 +22,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="adaptamem",
         description=(
-            "GPU teaches. CPU predicts. GPU is called only when CPU does not know."
+            "CPU-first MD inference for membrane proteins. "
+            "What can we learn without a long trajectory? "
+            "Modes: cpu_only | cpu_first | conventional."
         ),
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -49,7 +51,10 @@ def main(argv: list[str] | None = None) -> int:
     p_prep.add_argument("--out", type=Path, default=None)
     p_prep.add_argument("--force", action="store_true", help="Override doctor ACTION items")
 
-    p_feat = sub.add_parser("features", help="CPU: observables / latent features from traces")
+    p_feat = sub.add_parser(
+        "features",
+        help="CPU: observables from crystals or teacher traces",
+    )
     p_feat.add_argument("input", type=Path, nargs="?", default=None, help="workdir or JSON traces")
     p_feat.add_argument("--out", type=Path, default=None)
     p_feat.add_argument(
@@ -65,10 +70,19 @@ def main(argv: list[str] | None = None) -> int:
         default="name CA and resid 131 ; name CA and resid 272",
     )
     p_feat.add_argument("--precision", type=float, default=0.2)
+    p_feat.add_argument(
+        "--sequence",
+        type=Path,
+        default=None,
+        help="Amino-acid sequence. Moonshot input; currently NOT_READY without a structure.",
+    )
 
-    p_comp = sub.add_parser("compress", help="CPU: fit a surrogate from short teacher traces")
+    p_comp = sub.add_parser(
+        "compress",
+        help="CPU: fit a prior from crystals or a surrogate from teacher traces",
+    )
     p_comp.add_argument("traces", type=Path)
-    p_comp.add_argument("--kind", default="msm")
+    p_comp.add_argument("--kind", default="auto", help="auto | msm | latent_dynamics | active_learning | …")
     p_comp.add_argument("--out", type=Path, required=True)
     p_comp.add_argument("--lag", type=int, default=1)
     p_comp.add_argument("--n-bins", type=int, default=8)
@@ -84,8 +98,50 @@ def main(argv: list[str] | None = None) -> int:
     p_inf.add_argument("--out", type=Path, required=True)
     p_inf.add_argument("--n-samples", type=int, default=500)
     p_inf.add_argument("--seed", type=int, default=0)
+    p_inf.add_argument(
+        "--mode",
+        default="cpu_first",
+        help="cpu_only (no MD request) | cpu_first (oracle if uncertain) | conventional (REFUSE)",
+    )
 
-    p_or = sub.add_parser("oracle", help="GPU: short trustworthy MD. Explicit. Not a campaign.")
+    p_dec = sub.add_parser(
+        "decide",
+        help="CPU: COVERAGE vs BRIDGE vs MECHANISM. Does not launch MD.",
+    )
+    p_dec.add_argument(
+        "teacher",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="Frozen teacher JSON (default: bundled 2RH1/3SN6 teacher)",
+    )
+    p_dec.add_argument("--out", type=Path, required=True)
+    p_dec.add_argument(
+        "--crystal",
+        action="append",
+        default=[],
+        metavar="PDB[:CHAIN]",
+        help="Endpoint crystals for extra GPCR switches. Repeat.",
+    )
+
+    p_loo = sub.add_parser(
+        "loo",
+        help="CPU: leave-one-protein-out crystal prior. Hold-out traces are LEAKAGE.",
+    )
+    p_loo.add_argument("--hold-out", default="adrb2")
+    p_loo.add_argument("--catalog", type=Path, default=None)
+    p_loo.add_argument("--out", type=Path, required=True)
+    p_loo.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Repo root for catalog-relative PDB paths",
+    )
+
+    p_or = sub.add_parser(
+        "oracle",
+        help="GPU: short trustworthy MD after eq.pdb. Explicit. Not a campaign.",
+    )
     p_or.add_argument("workdir", type=Path)
     p_or.add_argument("--ns", type=float, required=True, help="Teacher length. Keep it tiny.")
     p_or.add_argument("--budget-hours", type=float, default=None)
@@ -118,7 +174,10 @@ def main(argv: list[str] | None = None) -> int:
     p_prod.add_argument("--budget-hours", type=float, default=None)
     p_prod.add_argument("--force", action="store_true", help="Ignore membrane QC refuse")
 
-    sub.add_parser("run", help="REFUSE: stages are explicit (prepare|features|compress|infer|oracle|analyze)")
+    sub.add_parser(
+        "run",
+        help="REFUSE: stages are explicit (prepare|features|compress|infer|oracle|analyze)",
+    )
 
     p_sample = sub.add_parser(
         "sample",
@@ -147,6 +206,13 @@ def main(argv: list[str] | None = None) -> int:
     p_of = sub.add_parser("oracle-freeze", help="Freeze conventional traces as held-out AA oracle")
     p_of.add_argument("workdir", type=Path)
     p_of.add_argument("--out", type=Path, default=None)
+    p_of.add_argument(
+        "--also",
+        action="append",
+        default=[],
+        type=Path,
+        help="Additional conventional start to concatenate into the held-out reference",
+    )
 
     p_os = sub.add_parser("oracle-score", help="Score estimates against a frozen oracle")
     p_os.add_argument("estimate", type=Path, help="JSON with diagnostics or values")
@@ -154,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_an = sub.add_parser(
         "analyze",
-        help="CPU: compression = MD avoided / GPU oracle spent",
+        help="CPU: compression = MD avoided / GPU oracle spent (cpu_only vs cpu_first vs conventional)",
     )
     p_an.add_argument("--oracle", type=Path, default=None)
     p_an.add_argument(
@@ -203,6 +269,10 @@ def main(argv: list[str] | None = None) -> int:
             return _compress(args)
         if args.cmd == "infer":
             return _infer(args)
+        if args.cmd == "decide":
+            return _decide(args)
+        if args.cmd == "loo":
+            return _loo(args)
         if args.cmd == "oracle":
             return _oracle(args)
         if args.cmd == "equilibrate":
@@ -222,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "reproduce":
             return _reproduce(args.campaign)
         if args.cmd == "oracle-freeze":
-            return _oracle_freeze(args.workdir, args.out)
+            return _oracle_freeze(args.workdir, args.out, also=args.also)
         if args.cmd == "oracle-score":
             return _oracle_score(args.estimate, args.oracle)
         if args.cmd in {"compare", "analyze"}:
@@ -306,8 +376,16 @@ def _assemble(args: argparse.Namespace) -> int:
 def _features(args: argparse.Namespace) -> int:
     from adaptamem.features import traces_from_path, traces_from_workdir, write_features
 
+    seq = args.sequence
+    src = Path(args.input) if args.input is not None else None
+    if seq is not None or (src is not None and src.suffix.lower() in {".fa", ".fasta", ".faa", ".seq"}):
+        raise RefuseError(
+            "sequence-in is the moonshot; need a structure first",
+            code="NOT_READY",
+        )
+
     if args.crystal:
-        from adaptamem.crystal import gate_span, traces_from_crystals
+        from adaptamem.crystal import crystal_insight
         from adaptamem.objective import Observable
 
         obs = [
@@ -318,13 +396,16 @@ def _features(args: argparse.Namespace) -> int:
                 precision=args.precision,
             )
         ]
-        traces = traces_from_crystals(list(args.crystal), obs)
-        spans = gate_span(traces, obs)
+        insight = crystal_insight(list(args.crystal), obs)
         dest = args.out or Path("features.json")
-        write_features(traces, dest)
+        traces = insight["features"]
+        write_features(traces, dest, extra={k: v for k, v in insight.items() if k != "features"})
         print(f"FEATURES  crystals n={ {k: len(v) for k, v in traces.items()} }")
         for k, v in traces.items():
-            print(f"  {k}  {[f'{x:.3f}' for x in v]}  span={spans[k]:.3f} nm")
+            span = (insight.get("heterogeneity") or {}).get(k)
+            print(f"  {k}  {[f'{x:.3f}' for x in v]}  span={span:.3f} nm")
+        print(f"  identified    {insight['identified']}")
+        print(f"  unidentified  {insight['unidentified']}")
         print(dest)
         return 0
 
@@ -348,9 +429,13 @@ def _compress(args: argparse.Namespace) -> int:
 
     src = Path(args.traces)
     traces = traces_from_workdir(src) if src.is_dir() else traces_from_path(src)
+    kind = str(args.kind)
+    if kind == "auto":
+        n = min((len(v) for v in traces.values()), default=0)
+        kind = "latent_dynamics" if n < args.lag + 2 else "msm"
     t0 = time.perf_counter()
     model = compress(
-        args.kind,
+        kind,
         traces,
         lag=args.lag,
         n_bins=args.n_bins,
@@ -364,29 +449,34 @@ def _compress(args: argparse.Namespace) -> int:
 
 
 def _infer(args: argparse.Namespace) -> int:
-    from adaptamem.compress import infer, uncertain_regions
+    from adaptamem.compress import infer_report
 
     model = json.loads(Path(args.model).read_text())
     t0 = time.perf_counter()
-    values = infer(model, n_samples=args.n_samples, seed=args.seed)
+    payload = infer_report(
+        model, mode=args.mode, n_samples=args.n_samples, seed=args.seed
+    )
     cpu = (time.perf_counter() - t0) / 3600.0
-    uncertain: dict = {}
-    try:
-        uncertain = uncertain_regions(model)
-    except RefuseError:
-        uncertain = {}
-    payload = {
-        "method": model.get("kind"),
-        "values": values,
-        "gpu_hours": float(model.get("gpu_hours") or 0.0),
-        "cpu_hours": cpu,
-        "uncertain": uncertain,
-        "kind": model.get("kind"),
-    }
+    payload["cpu_hours"] = cpu
     Path(args.out).write_text(json.dumps(payload, indent=2) + "\n")
+    uncertain = payload.get("uncertain") or {}
     n_unc = sum(len(v) for v in uncertain.values())
-    print(f"INFER  {payload['method']}  gpu-h={payload['gpu_hours']}  cpu-h={cpu:.6f}  uncertain_bins={n_unc}")
-    if n_unc:
+    print(
+        f"INFER  {payload['mode']}  {payload['method']}  "
+        f"gpu-h={payload['gpu_hours']}  cpu-h={cpu:.6f}  uncertain_bins={n_unc}"
+    )
+    print(f"  identified    {payload.get('identified')}")
+    print(f"  unidentified  {payload.get('unidentified')}")
+    if payload.get("bridge_missing"):
+        print("  BRIDGE  two wells, no sampled transition — not a 1D bin fill")
+        for name, spec in (payload.get("wells") or {}).items():
+            gap = spec.get("gap") or {}
+            wells = spec.get("wells") or []
+            print(
+                f"  {name}  wells={len(wells)}  cross_hops={spec.get('cross_hops')}  "
+                f"gap={gap.get('lo')}–{gap.get('hi')}"
+            )
+    if n_unc and payload.get("mode") != "cpu_only" and not payload.get("bridge_missing"):
         from adaptamem.features import write_oracle_request
 
         obs = model.get("observables") or {}
@@ -403,12 +493,51 @@ def _infer(args: argparse.Namespace) -> int:
     return 0
 
 
+def _decide(args: argparse.Namespace) -> int:
+    from adaptamem.decide import decide_b2ar_teacher
+
+    d = decide_b2ar_teacher(teacher=args.teacher, crystals=list(args.crystal or []))
+    payload = d.to_dict()
+    Path(args.out).write_text(json.dumps(payload, indent=2) + "\n")
+    print(f"DECIDE  coverage={d.coverage}  bridge={d.bridge}  gpu={d.gpu}")
+    if d.refuse:
+        print(f"  refuse     {d.refuse}")
+    print(f"  question   {d.question}")
+    if d.mechanism:
+        print(f"  MECHANISM  hidden={d.mechanism.get('hidden_at_endpoints')}")
+        print(f"  do_not_start {d.mechanism.get('do_not_start')}")
+    print(args.out)
+    return 0
+
+
+def _loo(args: argparse.Namespace) -> int:
+    from adaptamem.transfer import crystal_table, leave_one_out, load_catalog
+
+    cat = load_catalog(args.catalog)
+    root = Path(args.root) if args.root else Path.cwd()
+    table = crystal_table(cat, root=root)
+    payload = leave_one_out(table, str(args.hold_out))
+    Path(args.out).write_text(json.dumps(payload, indent=2) + "\n")
+    print(f"LOO  hold-out={payload['hold_out']}  train={payload['train']}  gpu-h=0")
+    for name, spec in (payload.get("predictions") or {}).items():
+        err = spec["error"]
+        print(
+            f"  {name}  inactive_err={err['inactive']:.3f}  "
+            f"active_err={err['active']:.3f}  span_err={err['span']:.3f}"
+        )
+    print(args.out)
+    return 0
+
+
 def _oracle(args: argparse.Namespace) -> int:
-    if not have_assembled(args.workdir) and not (Path(args.workdir) / "eq.pdb").is_file():
+    from adaptamem.gpu_contract import require_eq_pdb
+
+    if not have_assembled(args.workdir):
         raise RefuseError(
             f"no assembled system in {args.workdir}; CPU prepare first, then oracle",
             code="NOT_READY",
         )
+    require_eq_pdb(args.workdir)
     from adaptamem.produce import format_produce, produce
 
     r = produce(
@@ -552,10 +681,15 @@ def _reproduce(target: str) -> int:
     return 0
 
 
-def _oracle_freeze(workdir: Path, out: Path | None) -> int:
-    from adaptamem.oracle import freeze_workdir
+def _oracle_freeze(workdir: Path, out: Path | None, also: list[Path] | None = None) -> int:
+    from adaptamem.oracle import freeze_workdir, freeze_workdirs
 
-    oracle = freeze_workdir(workdir, out=out)
+    extras = list(also or [])
+    if extras:
+        dest = out or Path("oracle.json")
+        oracle = freeze_workdirs([workdir, *extras], out=dest)
+    else:
+        oracle = freeze_workdir(workdir, out=out)
     print(f"ORACLE  froze { {k: len(v) for k, v in oracle.values.items()} }")
     print(oracle.path)
     return 0

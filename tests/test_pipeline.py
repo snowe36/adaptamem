@@ -2,15 +2,19 @@ from pathlib import Path
 
 from adaptamem.cli import main
 from adaptamem.features import traces_from_payload, write_features
-from adaptamem.pipeline import CPU_STAGES, GPU_STAGES, STAGES, run_is_not_a_campaign
+from adaptamem.pipeline import CPU_STAGES, GPU_STAGES, MODES, STAGES, run_is_not_a_campaign
 
 
 def test_cpu_is_default_gpu_is_oracle_only():
     assert STAGES[0] == "prepare"
     assert "compress" in CPU_STAGES
     assert "infer" in CPU_STAGES
+    assert "decide" in CPU_STAGES
     assert GPU_STAGES == ("oracle",)
     assert "oracle" not in CPU_STAGES
+    from adaptamem.pipeline import EXPERIMENTS
+
+    assert "zero_shot_prior" in EXPERIMENTS
 
 
 def test_run_refuses_the_mega_pipeline(capsys):
@@ -22,8 +26,11 @@ def test_run_refuses_the_mega_pipeline(capsys):
 
 def test_run_message_names_the_loop():
     text = run_is_not_a_campaign()
-    assert "GPU teaches" in text
-    assert "oracle on a tiny subset" in text
+    assert "cpu_only" in text
+    assert "cpu_first" in text
+    assert "conventional" in text
+    assert "tiny MD teacher" in text
+    assert MODES == ("cpu_only", "cpu_first", "conventional")
 
 
 def test_features_from_values_json(tmp_path: Path):

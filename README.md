@@ -1,12 +1,14 @@
 # adaptamem
 
-**MD is the teacher, not the engine.** The cheapest sufficient membrane-protein *answer* is the one that matches a long conventional-MD oracle at a predefined error, using 10–100× fewer GPU-hours — or no production MD at all.
+**What can we learn about this membrane protein without a long MD simulation?**
 
-Adaptamem still builds a CHARMM36 OpenMM path so the teacher is trustworthy. It is not a GPCR-only pipeline and it is not an AftD/TmaT campaign manager. `ns/day` is a clock, not science.
+MD is the teacher, not the engine. Use it to learn what membrane-protein dynamics looks like, then **amortize that knowledge** across new proteins. Adaptamem predicts long-timescale *observables* (ensembles, CVs, uncertainty) — not every atom's trajectory — and runs conventional MD only where the prior is untrustworthy.
+
+It still builds a CHARMM36 OpenMM path so the teacher is trustworthy. It is not a GPCR-only pipeline and it is not an AftD/TmaT campaign manager. `ns/day` is a clock, not science.
 
 [![CI](https://github.com/snowe36/adaptamem/actions/workflows/ci.yml/badge.svg)](https://github.com/snowe36/adaptamem/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.org/badge/License-MIT-blue.svg)](LICENSE)
-![Python 3.11+](https://img.shields.org/badge/python-3.11%2B-blue.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 
 Repo: [github.com/snowe36/adaptamem](https://github.com/snowe36/adaptamem)
 
@@ -16,24 +18,36 @@ Repo: [github.com/snowe36/adaptamem](https://github.com/snowe36/adaptamem)
 
 A membrane protein PDB plus “run 100 ns” is a recipe. Adaptive walker allocation is still that recipe with a stopping rule. The 5EH4 GxxxG campaign proved it: one packed well, `select` STOP, **no acceleration**.
 
-**What information from a tiny amount of trustworthy MD can be exploited to predict the long-time ensemble, transitions, or observable without integrating the missing trajectories?**
+**Can a small amount of trustworthy MD, combined with structural priors, predict the long-time observable without integrating the missing trajectory?**
 
-Conventional MD is the oracle. GPU-hours to match that oracle within ε is the score. More MD that stops sooner is a failure mode.
+The destination is a transferable dynamics prior: trained on other proteins, evaluated on a **held-out** protein, with calibrated uncertainty, at substantially less compute than conventional MD. Three demonstrations: (1) mechanistic teacher selection on β2AR, (2) leave-one-protein-out crystal/dynamics prior, (3) tiny MD until error ≤ ε vs a frozen conventional oracle. A bigger corpus can learn conserved switches a tiny β2AR shot will never see. That is only science if the evaluation protein was not memorized.
+
+Do not make “generate a realistic trajectory” the first target. Predict the CV / ensemble / contacts plus uncertainty. Conventional MD remains the held-out reference. More MD that stops sooner is a failure mode.
+
+---
+
+## Three modes
+
+| Mode | Engine | When |
+|------|--------|------|
+| `cpu_only` | structure → CPU infer | no MD |
+| `cpu_first` | CPU infer, tiny MD teacher only if uncertain | default |
+| `conventional` | long MD, frozen | scoring reference, not the product |
 
 ---
 
 ## What this repo builds
 
 1. **prepare** (CPU) — doctor, orient, assemble
-2. **features** (CPU) — observables / latent representation from teacher traces
-3. **compress** (CPU) — MSM (built); other named plugs REFUSE as controls
-4. **infer** (CPU) — predict the ensemble; list under-sampled bins
-5. **oracle** (GPU, explicit) — short trustworthy MD on a shipped system. Not a campaign.
+2. **features** (CPU) — observables from crystals or teacher traces
+3. **compress** (CPU) — structure prior (`latent_dynamics`) or MSM from traces
+4. **infer** (CPU) — predict the ensemble; list what is identified vs not
+5. **oracle** (GPU, explicit) — short trustworthy MD after `eq.pdb`. Not a campaign.
 6. **analyze** (CPU) — compression = baseline MD avoided / GPU oracle spent
 
-`adaptamem run` refuses. Adaptive `sample` is a **baseline**, not the goal. Long production MD is what this project is trying to eliminate.
+`adaptamem run` refuses. Adaptive `sample` is a **baseline**, not the goal. Sequence-in without a structure is `NOT_READY`.
 
-Design: [docs/architecture.md](docs/architecture.md).
+Design: [docs/architecture.md](docs/architecture.md). Six-week ladder: [docs/compression-proposals.md](docs/compression-proposals.md).
 
 ---
 
@@ -73,19 +87,27 @@ adaptamem plan  tests/fixtures/helix.pdb --objective discover-states
 
 Optional physics: `uv sync --extra sim` then `adaptamem prepare …`.
 
-CPU compression loop:
+CPU-only (no MD):
+
+```text
+adaptamem features --crystal 2RH1.pdb:A --crystal 3SN6_R.pdb:R --out features.json
+adaptamem compress features.json --kind latent_dynamics --out model.json
+adaptamem infer model.json --mode cpu_only --out pred.json
+```
+
+CPU compression loop with a teacher:
 
 ```text
 adaptamem features traces.json --out features.json
 adaptamem compress features.json --kind msm --out model.json
-adaptamem infer model.json --out pred.json
+adaptamem infer model.json --mode cpu_first --out pred.json
 adaptamem analyze --oracle oracle.json --method msm=pred.json --method single_long=long.json
 ```
 
-GPU oracle (ship an assembled system first; not a campaign):
+GPU oracle (ship **eq.pdb** + assembled system; not a campaign):
 
 ```bash
-# on the pod, assembled.pdb + system.xml already present
+# on the pod: assembled.pdb + system.xml + eq.pdb already present
 export ADAPTAMEM_WORKDIR=runs/oracle ORACLE_NS=10
 bash scripts/runpod_boot.sh
 ```
@@ -122,7 +144,9 @@ Bar: 10× at matched ε, or CPU-only inference that matches. Lower CI is not a c
 
 ## Limitations
 
-- Compression plugs (`msm`, `learned_propagator`, …) **REFUSE** until implemented — they must not fall through to another production run.
+- Compression plugs (`learned_propagator`, …) **REFUSE** until implemented — they must not fall through to another production run.
+- Crystal/short-teacher inference does **not** claim rates, pathways, or free energies (`NOT_IMPLEMENTED`).
+- Sequence → structure is `NOT_READY`.
 - Cold-start TM detection is Kyte–Doolittle; β-barrels and interfacial helices are missed.
 - `auto` orientation is not PPM.
 - Mixed membranes: POPE:POPG swap only.
@@ -134,7 +158,7 @@ Bar: 10× at matched ε, or CPU-only inference that matches. Lower CI is not a c
 
 ## Future directions
 
-Proposals (no GPU yet): [docs/compression-proposals.md](docs/compression-proposals.md) — MSM from short shots, latent dynamics + equilibrium generator, uncertainty-gated hybrid. Adaptive `select` is not a candidate.
+Proposals: [docs/compression-proposals.md](docs/compression-proposals.md) — MSM from short shots, latent dynamics + equilibrium generator, uncertainty-gated hybrid. Adaptive `select` is not a candidate. GPU teacher for β2AR is Week 3 of that ladder, after `eq.pdb`.
 
 ---
 
@@ -146,7 +170,7 @@ Proposals (no GPU yet): [docs/compression-proposals.md](docs/compression-proposa
 | `bash scripts/reproduce.sh` | uv or venv | lint + tests + doctor/plan on the helix fixture |
 | `make gpu` / `python scripts/gpu_job.py` | CUDA + `openmm`/`pdbfixer` | CHARMM36 throughput JSON; no repo install |
 | `adaptamem assemble --out runs/job` | `[sim]` | compact bilayer + 4 fs HMR system |
-| `adaptamem produce runs/job --ns 1` | eq system | teacher traces |
+| `adaptamem produce runs/job --ns 1` | `eq.pdb` | teacher traces |
 | `adaptamem compare --oracle … --method …` | traces | GPU-hours to oracle ε |
 | `adaptamem reproduce <id>` | campaign.json | hashes + protocol replay |
 
@@ -158,12 +182,14 @@ CI: `.github/workflows/ci.yml` — Python 3.11 and 3.12, `uv sync --extra dev`, 
 
 ```text
 src/adaptamem/     engine (prepare, features, compress, infer, oracle, analyze)
-src/adaptamem/compress.py  MSM is built; other named plugs REFUSE as controls
+src/adaptamem/compress.py  MSM + latent prior; other named plugs REFUSE
+src/adaptamem/ladder.py    scored rungs vs NOT_IMPLEMENTED
+src/adaptamem/gpu_contract.py  eq.pdb, CUDA 12.8, no CPU fallback
 tests/             unit tests (OpenMM skipped if missing)
 examples/          b2ar.yaml (hard CV), glycophorin.yaml (easy-well control)
 docs/architecture.md
-docs/compression-proposals.md  MSM / latent / active-learning; 10× budgets
-scripts/gpu_oracle.py   short MD teacher only; system must already be assembled
+docs/compression-proposals.md  MSM / latent / active-learning; 6-week ladder
+scripts/gpu_oracle.py   short MD teacher only; eq.pdb required
 scripts/gpu_campaign.py 5EH4 negative-control baseline; not the boot path
 scripts/runpod_watchdog.py  terminate the pod when the job exits
 ```

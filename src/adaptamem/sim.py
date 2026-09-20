@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from adaptamem.errors import MISSING_ENGINE, RefuseError
+from adaptamem.gpu_contract import no_cpu_fallback, refuse_cpu_platform
 from adaptamem.schema import Protocol
 
 OPENMM_LIPIDS = ("POPC", "POPE", "DLPC", "DLPE", "DMPC", "DOPC", "DPPC")
@@ -62,7 +63,9 @@ def pick_platform(preference: list[str] | None = None) -> tuple[Any, str]:
     from openmm import Platform
 
     order = list(preference or ["CUDA", "OpenCL", "CPU"])
-    if "CPU" not in order:
+    if no_cpu_fallback():
+        order = [n for n in order if n != "CPU"]
+    elif "CPU" not in order:
         order.append("CPU")
     last: Exception | None = None
     for name in order:
@@ -73,7 +76,10 @@ def pick_platform(preference: list[str] | None = None) -> tuple[Any, str]:
                     plat.setPropertyDefaultValue("Precision", "mixed")
                 except Exception:  # noqa: BLE001
                     pass
+            refuse_cpu_platform(name)
             return plat, name
+        except RefuseError:
+            raise
         except Exception as exc:  # noqa: BLE001
             last = exc
     raise RefuseError(f"no OpenMM platform from {order}: {last}", code=MISSING_ENGINE)

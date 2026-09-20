@@ -26,7 +26,7 @@ adaptamem = "adaptamem.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-adaptamem = ["resources/*.yaml", "resources/lipids/*"]
+adaptamem = ["resources/*.yaml", "resources/*.json", "resources/lipids/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

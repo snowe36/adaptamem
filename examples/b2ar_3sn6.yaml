@@ -1,10 +1,8 @@
-name: b2ar_2rh1
-structure: ../data/structures/2RH1.pdb
+name: b2ar_3sn6
+structure: ../data/structures/3SN6_R.pdb
 notes: >
-  Compression target. Inactive β2AR X-ray 2RH1 (chain A) vs active 3SN6 (chain R).
-  CV tm6_ic CA 131–272, ε=0.2 nm. Crystal span 0.70 nm. 3P0G is aborted: nanobody-
-  stabilized TM6 already sits within ε of 3SN6. Seed both basins; do not discover
-  active from inactive-only MD. Teacher shots independent of any 1 μs oracle.
+  Active β2AR start (3SN6 chain R). Pair with b2ar_2rh1. Independent teacher
+  from this basin; do not discover active from inactive-only MD.
 
 objective:
   type: conformational_shift
@@ -43,4 +41,4 @@ compute:
   max_gpu_hours: 6.9
   max_wall_hours: 12
 
-seed: 42
+seed: 43

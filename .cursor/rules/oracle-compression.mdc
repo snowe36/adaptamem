@@ -1,5 +1,5 @@
 ---
-description: MD is the teacher, not the engine. Do not tune adaptive walker allocation; compress GPU-hours to oracle error.
+description: MD is the teacher. Amortize dynamics across proteins. GPU is a teacher budget.
 alwaysApply: true
 ---
 
@@ -7,26 +7,38 @@ alwaysApply: true
 
 Do not optimize the existing adaptive-MD policy by tuning thresholds or walker allocation. The GxxxG / 5EH4 campaign already showed that: one well, select STOP, no acceleration.
 
-Objective: **order-of-magnitude fewer GPU-hours** to match a long conventional-MD oracle on the same observable (±ε). CPU-only inference after a tiny MD teacher is stronger. Conventional MD is ground truth, not the paradigm to preserve.
+Adaptamem predicts **long-timescale observables** of membrane proteins (ensembles, CVs, uncertainty), not atom trajectories. MD is a teacher used to learn what dynamics looks like, then **amortized** across new proteins. GPU/MD is the exception, not the substrate. Not CPU MD. Not faster OpenMM. Not “an MD foundation model” as the product.
 
-Research question: what can a **tiny** amount of trustworthy MD teach so we can predict the long-time ensemble, transitions, or observable **without integrating the missing trajectories**?
+The destination question:
 
-Do not assume the answer is a better MD algorithm. The GPU is an active-learning oracle: short shots → learned representation → cheap CPU latent / equilibrium exploration → sparse MD only when uncertain.
+> Can a dynamics prior trained on other proteins predict a genuinely held-out protein's long-timescale behavior, with calibrated uncertainty, using substantially less computation than conventional MD?
 
-Allowed directions: learned propagator, latent-space dynamics, MSM from short shots, milestoning / weighted ensemble, generative equilibrium sampling, active learning that calls MD only when the model is uncertain, hybrid CPU surrogate + sparse GPU correction, GPU-free approximate dynamics when the question does not need exact AA trajectories.
+Transfer can learn conserved microswitches, membrane coupling, and collective motions that a tiny trajectory of the evaluation protein will never show. The constraint is **validation** (held-out protein, no memorization), not whether transfer is possible. Passing that protein's oracle π or mean into inference is `LEAKAGE`.
 
-Forbidden: “run more MD but stop sooner”; CI/hour as the primary score; easy CVs (tight dimer contacts, already-mixed wells); inventing another adaptive sampling heuristic. First pick a benchmark where ordinary MD mixes poorly (metastable states, slow transitions). Then measure **GPU-hours to reach predefined error vs the oracle**.
+Do not make “generate a realistic trajectory” the first target. Predict the scientific quantity plus uncertainty; invoke tiny MD only where the prior disagrees or is uncalibrated.
+
+Phases: (1) structure → whether/where MD is needed, (2) tiny teacher on this protein, (3) many proteins → transferable prior, (4) new protein → CPU first, MD only if uncertain. Current work is Phase 1–2.
+
+Three modes: `cpu_only` (no MD), `cpu_first` (tiny teacher only where uncertain), `conventional` (held-out reference, not the product).
+
+Objective: **order-of-magnitude fewer GPU-hours** to match a long conventional-MD oracle on the same observable (±ε), or **CPU-only inference that matches**. Conventional MD is ground truth for scoring, not the paradigm to preserve.
+
+Allowed directions: learned propagator, latent-space dynamics, MSM from short shots, milestoning / weighted ensemble, generative equilibrium sampling, transferable dynamics priors from an offline corpus, active learning that calls MD only when the model is uncertain, hybrid CPU surrogate + sparse GPU correction.
+
+Forbidden: “run more MD but stop sooner”; CI/hour as the primary score; easy CVs (tight dimer contacts, already-mixed wells); inventing another adaptive sampling heuristic; claiming transfer without a held-out protein. First pick a benchmark where ordinary MD mixes poorly. Then measure **GPU-hours to reach predefined error vs the oracle**.
 
 ## Acceleration claim
 
-A method may only be called an acceleration if it reaches the predefined observable error ε relative to the oracle using **≥10× fewer GPU-hours** than the conventional baseline. Reporting lower CI or earlier stopping without demonstrating matched oracle error does **not** constitute acceleration. CPU inference time must be reported separately. If a method requires no GPU after training/calibration, report total GPU-hours and CPU-hours independently.
+A method may only be called an acceleration if it reaches the predefined observable error ε relative to the oracle using **≥10× fewer GPU-hours** than the conventional baseline, **or** CPU-only inference (`gpu_hours=0`) that matches ε. Reporting lower CI or earlier stopping without demonstrating matched oracle error does **not** constitute acceleration. CPU inference time must be reported separately. If a method requires no GPU after training/calibration, report total GPU-hours and CPU-hours independently.
 
 ## No oracle leakage
 
-The oracle trajectory may be used to **evaluate** error and, where explicitly specified, construct a **held-out** training split. The method being benchmarked must not access future oracle frames, oracle-derived equilibrium populations, or the final oracle mean during inference. Passing those into `compress` is a `LEAKAGE` refuse.
+The oracle trajectory may be used to **evaluate** error and, where explicitly specified, construct a **held-out** training split. The method being benchmarked must not access future oracle frames, oracle-derived equilibrium populations, or the final oracle mean during inference. Passing those into `compress` is a `LEAKAGE` refuse. A dynamics prior must not be trained on the evaluation protein's conventional trajectory.
 
 ## Before GPU spend
 
-Do not launch a β2AR (or other) GPU campaign until a written proposal names 2–3 compression mechanisms and what each needs for a 10× reduction. Do not spend the method budget inventing walker heuristics. If the oracle CV span is already within ε, abort: that is another 5EH4.
+Do not launch a β2AR (or other) GPU job until the crystal gate passes and CPU inference names a shot. Packing is not a teacher: `oracle` requires `eq.pdb`. Matching stack: CUDA 12.8 + conda-forge OpenMM `cuda-version=12.8`. No CPU fallback on a billed GPU. If the oracle CV span is already within ε, abort: that is another 5EH4.
+
+Leave-one-protein-out: the evaluation protein's conventional trajectory, oracle π, or crystal-derived labels used as *training* input is `LEAKAGE`. Crystals of *other* proteins may train the prior. Score zero-shot, then 0.5 / 1 / 2 ns teacher, against a held-out reference the method never sees.
 
 Success: 10–100× less GPU than 1 μs conventional at matched ε, or the same answer with no production MD. Failure: a smarter `select`.

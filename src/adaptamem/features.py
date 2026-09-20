@@ -87,9 +87,17 @@ def atoms_xyz_from_pdb(
     return atoms, xyz
 
 
-def write_features(traces: dict[str, list[float]], path: Path) -> Path:
+def write_features(
+    traces: dict[str, list[float]],
+    path: Path,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> Path:
     path = Path(path)
-    path.write_text(json.dumps({"features": traces, "gpu_hours": 0.0}, indent=2) + "\n")
+    payload: dict[str, Any] = {"features": traces, "gpu_hours": 0.0}
+    if extra:
+        payload.update(extra)
+    path.write_text(json.dumps(payload, indent=2) + "\n")
     return path
 
 

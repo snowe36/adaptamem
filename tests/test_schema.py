@@ -29,6 +29,9 @@ def test_example_recipes_load():
     assert b2ar.name == "b2ar_2rh1"
     assert b2ar.objective.type == "conformational_shift"
     assert b2ar.objective.observables[0].name == "tm6_ic"
+    act = load_system(ROOT / "examples" / "b2ar_3sn6.yaml")
+    assert act.name == "b2ar_3sn6"
+    assert "3SN6_R" in str(act.structure)
     gpa = load_system(ROOT / "examples" / "glycophorin.yaml")
     assert gpa.compute.max_gpu_hours == 20
     assert gpa.objective.observables[0].kind == "distance"

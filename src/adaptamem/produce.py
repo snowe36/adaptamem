@@ -16,7 +16,7 @@ from adaptamem.errors import RefuseError
 from adaptamem.objective import Observable, parse_objective
 from adaptamem.observables import atoms_from_topology, evaluate, positions_nm
 from adaptamem.schema import Protocol, load_protocol
-from adaptamem.sim import hardware_label, langevin, pick_platform, require_openmm
+from adaptamem.sim import hardware_label, langevin, pick_platform, require_openmm, strip_barostat
 
 Progress = Callable[[str], None]
 
@@ -38,6 +38,10 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     return json.loads(path.read_text())
+
+
+def production_strip_barostat(stages: list[str]) -> bool:
+    return "npt_restrained" not in stages and "free_membrane" not in stages
 
 
 def _observables_from_workdir(workdir: Path) -> list[Observable]:
@@ -117,6 +121,10 @@ def produce(
 
     pdb = PDBFile(str(pdb_path))
     system = XmlSerializer.deserialize(xml_path.read_text())
+    if production_strip_barostat(list(eq_meta.get("stages") or [])):
+        system = strip_barostat(system)
+        notes.append("NVT teacher: stripped membrane barostat")
+        log("produce NVT (no barostat)")
     plat, plat_name = pick_platform(proto.platform_preference)
     gpu = hardware_label(plat, plat_name)
     sim = Simulation(pdb.topology, system, langevin(proto), plat)

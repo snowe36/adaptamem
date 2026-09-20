@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""GPU oracle only. Ship an assembled system. Short MD. Write traces. Leave.
+"""GPU oracle only. Ship an equilibrated system. Short MD. Write traces. Leave.
 
-No fetch, assemble, eq campaign, bench, or scout.
+No fetch, assemble, eq campaign, bench, or scout. Packing is not a teacher.
 """
 
 from __future__ import annotations
@@ -26,15 +26,25 @@ def main() -> int:
     ns = float(os.environ.get("ORACLE_NS") or "10")
     assembled = workdir / "assembled.pdb"
     xml = workdir / "system.xml"
-    eq = workdir / "eq.pdb"
+    from adaptamem.gpu_contract import (
+        enable_no_cpu_fallback,
+        require_eq_pdb,
+        stack_note,
+    )
+
     if not assembled.is_file() or not xml.is_file():
         log("ORACLE_FAIL  no assembled.pdb/system.xml; CPU prepare + ship first")
         print("ORACLE_FAIL", flush=True)
         return 2
-    if not eq.is_file():
-        log("ORACLE_FAIL  no eq.pdb; addMembrane packing is not a teacher (4 fs NaNs)")
+    try:
+        require_eq_pdb(workdir)
+    except Exception as exc:
+        log(f"ORACLE_FAIL  {exc}")
         print("ORACLE_FAIL", flush=True)
         return 2
+
+    enable_no_cpu_fallback()
+    log(stack_note())
 
     from adaptamem.produce import produce
 

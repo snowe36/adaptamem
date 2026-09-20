@@ -21,6 +21,7 @@ METHODS = (
     "adaptive",
     "random_branch",
     "latent_dynamics",
+    "cpu_only",
     "msm",
     "surrogate",
     "hybrid_correction",
@@ -83,7 +84,7 @@ def hours_to_oracle_error(
 
 def is_compress_method(name: str) -> bool:
     key = name.replace("-", "_")
-    return key in COMPRESS_KINDS or key == "surrogate"
+    return key in COMPRESS_KINDS or key in {"surrogate", "cpu_only", "cpu_first"}
 
 
 def acceleration_claim(

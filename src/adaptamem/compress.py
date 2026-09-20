@@ -10,6 +10,7 @@ import random
 from typing import Any
 
 from adaptamem.errors import RefuseError
+from adaptamem.ladder import identify
 
 KINDS = (
     "msm",
@@ -64,16 +65,71 @@ def compress(kind: str, traces: dict[str, list[float]], **kwargs: object) -> dic
             code="LEAKAGE",
         )
     if key == "msm":
-        return fit_msm(traces, **kwargs)
-    if key == "latent_dynamics":
-        return fit_latent(traces, **kwargs)
-    if key == "active_learning":
-        return fit_active(traces, **kwargs)
-    raise RefuseError(
-        f"{key} is a named plug: learn from short MD, then predict. "
-        "Do not spend the remaining budget integrating walkers.",
-        code="COMPRESS",
+        model = fit_msm(traces, **kwargs)
+    elif key == "latent_dynamics":
+        model = fit_latent(traces, **kwargs)
+    elif key == "active_learning":
+        model = fit_active(traces, **kwargs)
+    else:
+        raise RefuseError(
+            f"{key} is a named plug: learn from short MD, then predict. "
+            "Do not spend the remaining budget integrating walkers.",
+            code="COMPRESS",
+        )
+    gpu = float(model.get("gpu_hours") or 0.0)
+    model["identification"] = identify(
+        model, mode="cpu_only" if gpu == 0.0 else "cpu_first"
     )
+    return model
+
+
+def infer_report(
+    model: dict[str, Any],
+    *,
+    mode: str = "cpu_first",
+    n_samples: int = 500,
+    seed: int = 0,
+    min_count: int = 5,
+) -> dict[str, Any]:
+    """Infer values plus identification. cpu_only forbids teacher GPU-hours."""
+    from adaptamem.pipeline import MODES
+
+    key = mode.replace("-", "_")
+    if key not in MODES:
+        raise RefuseError(f"unknown mode {mode!r}; use {', '.join(MODES)}", code="NOT_READY")
+    if key == "conventional":
+        raise RefuseError(
+            "conventional is held-out MD (oracle-freeze + analyze), not infer",
+            code="NOT_READY",
+        )
+    gpu = float(model.get("gpu_hours") or 0.0)
+    if key == "cpu_only" and gpu > 0:
+        raise RefuseError("cpu_only forbids teacher GPU-hours", code="NOT_READY")
+    values = infer(model, n_samples=n_samples, seed=seed)
+    uncertain: dict[str, list[int]] = {}
+    try:
+        uncertain = uncertain_regions(model, min_count=min_count)
+    except RefuseError:
+        uncertain = {}
+    ident = identify(model, mode=key)
+    if key == "cpu_only":
+        ident["kinetics_identified"] = False
+        ident["pi_identified"] = False
+        extra = ["pi", "transitions", "timescales"]
+        ident["unidentified"] = list(dict.fromkeys(extra + list(ident["unidentified"])))
+    return {
+        "mode": key,
+        "method": model.get("kind"),
+        "kind": model.get("kind"),
+        "values": values,
+        "gpu_hours": gpu,
+        "uncertain": uncertain,
+        "identification": ident,
+        "identified": ident["identified"],
+        "unidentified": ident["unidentified"],
+        "wells": _model_wells(model),
+        "bridge_missing": _bridge_missing(model),
+    }
 
 
 def infer(model: dict[str, Any], **kwargs: object) -> dict[str, list[float]]:
@@ -113,6 +169,9 @@ def uncertain_regions(model: dict[str, Any], *, min_count: int = 5) -> dict[str,
         if spec.get("constant") is not None:
             out[name] = [0]
             continue
+        if spec.get("bridge_missing"):
+            out[name] = []
+            continue
         counts = spec.get("counts") or []
         out[name] = [i for i, row in enumerate(counts) if sum(row) < min_count]
     return out
@@ -143,15 +202,24 @@ def fit_msm(traces: dict[str, list[float]], **kwargs: object) -> dict[str, Any]:
 
 
 def fit_latent(traces: dict[str, list[float]], **kwargs: object) -> dict[str, Any]:
-    """Empirical occupancy of teacher frames. Not a neural SDE."""
+    """Empirical occupancy of crystal or teacher frames. Not a neural SDE."""
     if not traces:
-        raise RefuseError("latent_dynamics needs teacher traces", code="COMPRESS")
+        raise RefuseError(
+            "latent_dynamics needs crystal or teacher frames (structure prior)",
+            code="COMPRESS",
+        )
     obs: dict[str, Any] = {}
     for name, series in traces.items():
         xs = [float(v) for v in series]
         if not xs:
             raise RefuseError(f"latent teacher {name!r} is empty", code="COMPRESS")
-        obs[name] = {"support": xs, "lo": min(xs), "hi": max(xs), "n_frames": len(xs)}
+        obs[name] = {
+            "support": xs,
+            "lo": min(xs),
+            "hi": max(xs),
+            "n_frames": len(xs),
+            "kinetics_identified": False,
+        }
     return {"kind": "latent_dynamics", "gpu_hours": _gpu_hours(kwargs), "observables": obs}
 
 
@@ -191,8 +259,14 @@ def fit_active(traces: dict[str, list[float]], **kwargs: object) -> dict[str, An
         inner_kw["shot_lengths"] = shot_lens
         inner_kw["teacher_gpu_hours"] = spent
         model = compress(inner_kind, current, **inner_kw)
+        if _bridge_missing(model) and not _has_extra(extra_map):
+            raise RefuseError(
+                "two wells observed, no sampled transition; "
+                "filling 1D bins is not a mechanism teacher",
+                code="BRIDGE",
+            )
         unc = uncertain_regions(model)
-        if not _any_hungry(unc):
+        if not _any_hungry(unc) and not _bridge_missing(model):
             break
         if _all_hungry(model, unc) and not _has_extra(extra_map):
             raise RefuseError(
@@ -309,6 +383,119 @@ def _any_hungry(unc: dict[str, list[int]]) -> bool:
     return any(bins for bins in unc.values())
 
 
+def _bridge_missing(model: dict[str, Any]) -> bool:
+    obs = model.get("observables") or {}
+    return any(
+        isinstance(spec, dict) and spec.get("bridge_missing") for spec in obs.values()
+    )
+
+
+def _model_wells(model: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name, spec in (model.get("observables") or {}).items():
+        if not isinstance(spec, dict):
+            continue
+        out[name] = {
+            "wells": spec.get("wells") or [],
+            "gap": spec.get("gap"),
+            "cross_hops": spec.get("cross_hops"),
+            "bridge_missing": bool(spec.get("bridge_missing")),
+        }
+    return out
+
+
+def _wells(xs: list[float], shot_lengths: list[int]) -> list[dict[str, float]]:
+    by_shot = _shot_supports(xs, shot_lengths)
+    if len(shot_lengths) >= 2 and len(by_shot) >= 2:
+        raw = by_shot
+    else:
+        raw = _value_clusters(xs)
+    return [{"lo": lo, "hi": hi, "n": n} for lo, hi, n in raw]
+
+
+def _value_clusters(xs: list[float]) -> list[tuple[float, float, int]]:
+    uniq = sorted(set(xs))
+    if not uniq:
+        return []
+    if len(uniq) == 1:
+        return [(uniq[0], uniq[0], len(xs))]
+    if len(uniq) == 2:
+        a, b = uniq
+        return [(a, a, xs.count(a)), (b, b, xs.count(b))]
+    gaps = [uniq[i + 1] - uniq[i] for i in range(len(uniq) - 1)]
+    mx = max(gaps)
+    med = sorted(gaps)[len(gaps) // 2]
+    cuts = {gaps.index(mx)} if mx > 0 and mx >= 2.0 * med else set()
+    groups: list[list[float]] = [[uniq[0]]]
+    for i in range(len(gaps)):
+        if i in cuts:
+            groups.append([uniq[i + 1]])
+        else:
+            groups[-1].append(uniq[i + 1])
+    out: list[tuple[float, float, int]] = []
+    for g in groups:
+        lo, hi = g[0], g[-1]
+        n = sum(1 for x in xs if lo <= x <= hi)
+        out.append((lo, hi, n))
+    return out
+
+
+def _shot_supports(xs: list[float], shot_lengths: list[int]) -> list[tuple[float, float, int]]:
+    ranges: list[tuple[float, float, int]] = []
+    off = 0
+    for slen in shot_lengths:
+        seg = xs[off : off + slen]
+        off += slen
+        if not seg:
+            continue
+        ranges.append((min(seg), max(seg), len(seg)))
+    return _merge_ranges(ranges)
+
+
+def _merge_ranges(ranges: list[tuple[float, float, int]]) -> list[tuple[float, float, int]]:
+    if not ranges:
+        return []
+    ordered = sorted(ranges, key=lambda r: r[0])
+    merged = [list(ordered[0])]
+    for lo, hi, n in ordered[1:]:
+        plo, phi, pn = merged[-1]
+        if lo <= phi:
+            merged[-1] = [plo, max(phi, hi), pn + n]
+        else:
+            merged.append([lo, hi, n])
+    return [(float(a), float(b), int(c)) for a, b, c in merged]
+
+
+def _well_id(x: float, wells: list[dict[str, float]]) -> int:
+    for i, w in enumerate(wells):
+        if float(w["lo"]) <= x <= float(w["hi"]):
+            return i
+    return -1
+
+
+def _cross_hops(labels: list[int], lag: int, shot_lengths: list[int]) -> int:
+    n = 0
+    off = 0
+    for slen in shot_lengths:
+        seg = labels[off : off + slen]
+        for t in range(len(seg) - lag):
+            a, b = seg[t], seg[t + lag]
+            if a >= 0 and b >= 0 and a != b:
+                n += 1
+        off += slen
+    return n
+
+
+def _gap(wells: list[dict[str, float]]) -> dict[str, float] | None:
+    if len(wells) < 2:
+        return None
+    lo = float(wells[0]["hi"])
+    hi = float(wells[1]["lo"])
+    if hi <= lo:
+        return None
+    return {"lo": lo, "hi": hi, "width": hi - lo}
+
+
 def _all_hungry(model: dict[str, Any], unc: dict[str, list[int]]) -> bool:
     obs = model.get("observables") or {}
     if not obs:
@@ -365,7 +552,11 @@ def _fit_1d(
         centers = _bin_centers(edges, n)
     counts = _transition_counts(bins, n, lag, shot_lengths or [len(bins)])
     hops = sum(counts[i][j] for i in range(n) for j in range(n) if i != j)
-    disconnected = hops == 0 and n > 1
+    wells = _wells(xs, shot_lengths or [len(xs)])
+    labels = [_well_id(x, wells) for x in xs]
+    cross = _cross_hops(labels, lag, shot_lengths or [len(xs)])
+    bridge_missing = len(wells) > 1 and cross == 0
+    disconnected = bridge_missing or (hops == 0 and n > 1)
     trans = _row_stochastic(counts)
     if disconnected:
         occ = [0.0] * n
@@ -384,6 +575,10 @@ def _fit_1d(
         "lag": lag,
         "n_frames": len(xs),
         "disconnected": disconnected,
+        "wells": wells,
+        "gap": _gap(wells),
+        "cross_hops": cross,
+        "bridge_missing": bridge_missing,
     }
 
 

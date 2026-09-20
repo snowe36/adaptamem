@@ -61,6 +61,16 @@ def freeze_workdir(workdir: Path, *, out: Path | None = None) -> Oracle:
     return freeze(traces, dest, extra=extra)
 
 
+def freeze_workdirs(workdirs: list[Path], *, out: Path) -> Oracle:
+    """Held-out reference from independent conventional starts. Concatenate, do not mix into compress."""
+    parts = [_traces_from_workdir(Path(w)) for w in workdirs]
+    merged: dict[str, list[float]] = {}
+    for traces in parts:
+        for k, v in traces.items():
+            merged.setdefault(k, []).extend(list(v))
+    return freeze(merged, out, extra={"starts": [str(w) for w in workdirs], "held_out": True})
+
+
 def load_oracle(path: Path) -> Oracle:
     data = json.loads(Path(path).read_text())
     values = data.get("values") or {}

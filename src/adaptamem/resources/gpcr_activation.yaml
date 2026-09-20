@@ -1,0 +1,21 @@
+family: gpcr_activation
+observable_family: activation
+epsilon_nm: 0.2
+held_out_default: adrb2
+notes: >
+  Experiment 2 input. Inactive/active X-ray (or EM) pairs, one biological copy.
+  Residue numbers are this protein's sequence, mapped to BW 3.50–6.34 / 3.50–6.30 /
+  3.40–6.44 / 7.53–3.50. Score crystals only until a dynamics corpus exists.
+  Holding out adrb2 while training on adrb2 traces is LEAKAGE.
+
+proteins:
+  - id: adrb2
+    name: beta2AR
+    uniprot: P07550
+    inactive: {pdb: 2RH1, chain: A, file: data/structures/2RH1.pdb}
+    active: {pdb: 3SN6, chain: R, file: data/structures/3SN6_R.pdb}
+    residues:
+      tm6_ic: [131, 272]
+      ionic_lock: [131, 268]
+      tm3_tm6_pack: [121, 282]
+      npxxY: [326, 131]

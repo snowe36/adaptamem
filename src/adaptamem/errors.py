@@ -4,7 +4,9 @@ from __future__ import annotations
 
 # Typed refusals. Pretty numbers from inadequate sampling are worse than these.
 BUDGET = "BUDGET"
+BRIDGE = "BRIDGE"
 COVERAGE = "COVERAGE"
+MECHANISM = "MECHANISM"
 MEMBRANE_QC = "MEMBRANE_QC"
 MISSING_ENGINE = "MISSING_ENGINE"
 PPM_MISSING = "PPM_MISSING"
@@ -12,6 +14,8 @@ NOT_MEMBRANE = "NOT_MEMBRANE"
 NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
 NOT_READY = "NOT_READY"
 STRUCTURE = "STRUCTURE"
+EASY_WELL = "EASY_WELL"
+LEAKAGE = "LEAKAGE"
 
 
 class RefuseError(Exception):

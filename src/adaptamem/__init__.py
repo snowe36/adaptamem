@@ -1,4 +1,4 @@
-"""adaptamem — decide the cheapest membrane-protein simulation that answers the question."""
+"""adaptamem — CPU-first MD inference for membrane proteins."""
 
 from adaptamem.box import BoxPlan, plan_box
 from adaptamem.doctor import DoctorReport, audit

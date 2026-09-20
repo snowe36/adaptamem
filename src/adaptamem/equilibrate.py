@@ -118,11 +118,14 @@ def equilibrate(
             try:
                 prec = "double" if pname == "CUDA" else None
                 sim = _sim(sys_obj, pobj, 1.0, min_pos, precision=prec)
-                sim.context.setVelocitiesToTemperature(proto.temperature_K * unit.kelvin)
                 if settle:
                     log(f"{label}: {settle} steps @ 1 fs ({pname})")
                     sim.step(settle)
-                pos = sim.context.getState(getPositions=True).getPositions()
+                else:
+                    sim.context.setVelocitiesToTemperature(proto.temperature_K * unit.kelvin)
+                st1 = sim.context.getState(getPositions=True, getVelocities=True)
+                pos = st1.getPositions()
+                vel = st1.getVelocities()
                 if _has_nan(pos):
                     raise RuntimeError("NaN after 1 fs settle")
                 settled = True
@@ -139,8 +142,19 @@ def equilibrate(
             last = None
             for pname, pobj in four_fs_platforms(platforms):
                 try:
-                    sim4 = _sim(sys_obj, pobj, proto.eq_timestep_fs, pos)
-                    sim4.context.setVelocitiesToTemperature(proto.temperature_K * unit.kelvin)
+                    run_pos, run_vel = pos, vel
+                    if _has_barostat(sys_obj):
+                        prec = "double" if pname == "CUDA" else None
+                        simw = _sim(sys_obj, pobj, 1.0, run_pos, precision=prec)
+                        simw.context.setVelocities(run_vel)
+                        log(f"{label}: {NPT_WARMUP_1FS} steps @ 1 fs barostat warmup ({pname})")
+                        simw.step(NPT_WARMUP_1FS)
+                        stw = simw.context.getState(getPositions=True, getVelocities=True)
+                        run_pos, run_vel = stw.getPositions(), stw.getVelocities()
+                        if _has_nan(run_pos):
+                            raise RuntimeError("NaN after barostat warmup")
+                    sim4 = _sim(sys_obj, pobj, proto.eq_timestep_fs, run_pos)
+                    sim4.context.setVelocities(run_vel)
                     log(f"{label}: {steps} steps @ {proto.eq_timestep_fs:g} fs ({pname})")
                     sim4.step(steps)
                     state = sim4.context.getState(getPositions=True, getEnergy=True)
@@ -176,11 +190,6 @@ def equilibrate(
         free_steps = _steps(proto.eq_free_membrane_ns, proto.eq_timestep_fs)
 
     pos, energy, temp = _run("nvt_restrained", nvt_sys, pdb.positions, nvt_steps, minimize=True)
-    if npt_steps:
-        npt_sys = _clone(system)
-        _restrain_ca(npt_sys, pdb.topology, pos, k_rest)
-        pos, energy, temp = _run("npt_restrained", npt_sys, pos, npt_steps, minimize=False)
-
     qc = scorecard(
         pdb.topology,
         pos,
@@ -189,6 +198,22 @@ def equilibrate(
         target_T=proto.temperature_K,
         check_temperature=not short,
     )
+    if npt_steps and not skip_npt(qc_ok=qc.ok, stop_on_qc=proto.eq_stop_on_qc):
+        npt_sys = _clone(system)
+        _soften_barostat(npt_sys, frequency=100)
+        _restrain_ca(npt_sys, pdb.topology, pos, k_rest)
+        pos, energy, temp = _run("npt_restrained", npt_sys, pos, npt_steps, minimize=False)
+        qc = scorecard(
+            pdb.topology,
+            pos,
+            potential_kj=energy,
+            temperature_K=temp,
+            target_T=proto.temperature_K,
+            check_temperature=not short,
+        )
+    elif npt_steps:
+        log("QC ok — skipping npt_restrained (4 fs + membrane barostat NaNs)")
+        stages.append("skip_npt")
     if (not qc.ok) and free_steps and proto.eq_stop_on_qc:
         log("QC not ready — free membrane continuation")
         pos, energy, temp = _run("free_membrane", system, pos, free_steps, minimize=False)
@@ -258,9 +283,29 @@ def settle_steps(*, short: bool, platform: str, cuda_failed: bool) -> int:
     return 2000
 
 
+# 10 ps at 1 fs before 4 fs NPT. Maxwell + barostat + 4 fs NaNs on a packed bilayer.
+NPT_WARMUP_1FS = 10_000
+
+
+def skip_npt(*, qc_ok: bool, stop_on_qc: bool) -> bool:
+    """addMembrane POPC already in APL/thickness; 4 fs MonteCarloMembraneBarostat NaNs."""
+    return bool(qc_ok and stop_on_qc)
+
+
 def four_fs_platforms(platforms: list[tuple[str, Any]]) -> list[tuple[str, Any]]:
     gpu = [(n, p) for n, p in platforms if n != "CPU"]
     return gpu or platforms
+
+
+def _has_barostat(system: Any) -> bool:
+    return any("Barostat" in type(system.getForce(i)).__name__ for i in range(system.getNumForces()))
+
+
+def _soften_barostat(system: Any, frequency: int = 100) -> None:
+    for i in range(system.getNumForces()):
+        force = system.getForce(i)
+        if "Barostat" in type(force).__name__ and hasattr(force, "setFrequency"):
+            force.setFrequency(frequency)
 
 
 def _steps(time_ns: float, timestep_fs: float) -> int:
@@ -278,7 +323,9 @@ def _platform_ladder(preference: list[str]) -> list[tuple[str, Any]]:
 
     plat, name = pick_platform(preference)
     out = [(name, plat)]
-    if name != "CPU":
+    from adaptamem.gpu_contract import no_cpu_fallback
+
+    if name != "CPU" and not no_cpu_fallback():
         try:
             out.append(("CPU", Platform.getPlatformByName("CPU")))
         except Exception:  # noqa: BLE001
@@ -293,10 +340,15 @@ def _has_nan(positions: Any) -> bool:
     return any(p[0] != p[0] or p[1] != p[1] or p[2] != p[2] for p in xyz)
 
 
+# CustomExternalForce is not periodic unless periodicdistance is used.
+# Non-periodic k((x-x0)^2+...) yanks CA across the box when PBC wraps and NaNs.
+CA_RESTRAINT_ENERGY = "k*periodicdistance(x, y, z, x0, y0, z0)^2"
+
+
 def _restrain_ca(system: Any, topology: Any, positions: Any, k: float) -> None:
     from openmm import CustomExternalForce, unit
 
-    force = CustomExternalForce("k*((x-x0)^2+(y-y0)^2+(z-z0)^2)")
+    force = CustomExternalForce(CA_RESTRAINT_ENERGY)
     force.addGlobalParameter("k", k)
     force.addPerParticleParameter("x0")
     force.addPerParticleParameter("y0")
