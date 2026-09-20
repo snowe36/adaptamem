@@ -68,8 +68,16 @@ def one_start(workdir: Path, ns: float) -> None:
 
 def main() -> int:
     os.chdir(ROOT)
+    from adaptamem.correction import require_teacher_gpu
+    from adaptamem.errors import RefuseError
     from adaptamem.gpu_contract import enable_no_cpu_fallback, stack_note
 
+    try:
+        require_teacher_gpu()
+    except RefuseError as exc:
+        log(exc.format())
+        print("TEACHER_FAIL", flush=True)
+        return 2
     enable_no_cpu_fallback()
     log(stack_note())
     try:

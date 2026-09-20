@@ -1,0 +1,63 @@
+experiment: adaptive_correction
+gpu: false
+epsilon_nm: 0.2
+acceleration_bar: 10
+do_not_start: [2RH1, 3SN6]
+
+hold_out:
+  primary: adrb2
+  adversarial: acm2
+  hard: htr2a
+  why:
+    adrb2: TM6 transfers; ionic lock fails; packing is trivial at the crystals
+    acm2: lock crystal span 0.14 nm; family prior predicts ~0.68 nm — the prior invents a switch
+    htr2a: first TM6 LOO miss (span error 0.22 nm); lock still transfers
+
+observables:
+  tm6_ic:
+    role: transferable
+    why: every LOO fold reaches ε on TM6 span
+  ionic_lock:
+    role: failure
+    why: LOO span misses ε on adrb2, aa2ar, acm2
+  tm3_tm6_pack:
+    role: trivial
+    why: crystal span < ε on 6/7 pairs; endpoint match is not dynamics
+  pack_in_inactive_tm6:
+    role: mechanism
+    why: Experiment 1 discriminating region; crystals cannot order the events
+
+oracle:
+  kind: conventional_md
+  evaluation_only: true
+  trains_prior: false
+  require: eq.pdb
+  packing_is_not_teacher: true
+  starts: both basins if crystal span >= epsilon
+  score: long-time mean and span per observable, plus pack_in_inactive_tm6
+  not_purchased: true
+
+teacher:
+  metric: error_reduction_per_gpu_hour
+  budgets_gpu_hours: [0.0, 0.05, 0.10, 0.25, 1.0]
+  gate: unreliable_or_disagreement
+  skip_if_confident: true
+  skip_trivial: true
+  conventional_reference: oracle
+
+stopping:
+  - gated observable error <= epsilon vs oracle
+  - or teacher budget 1 GPU-h exhausted
+  - never another 1D TM6 shot from 2RH1/3SN6
+  - if every gated observable already within ε at 0 GPU-h: DONE, no GPU
+
+named_questions:
+  - protein: adrb2
+    coordinate: ionic_lock
+    why: zero-shot active error 0.32 nm
+  - protein: adrb2
+    coordinate: pack_in_inactive_tm6
+    why: BRIDGE/MECHANISM; packing hidden at endpoints
+  - protein: htr2a
+    coordinate: tm6_ic
+    why: hard hold-out; first catalog protein where TM6 zero-shot misses ε

@@ -79,9 +79,9 @@ Loop: structure → CPU prior → infer → if uncertain, tiny MD teacher → co
 |--|----------|------|
 | 1 Mechanistic teacher | Two wells vs missing path vs 1D coverage | `decide` on frozen β2AR teacher |
 | 2 Zero-shot prior | Other proteins' structures predict a **held-out** protein's activation coordinates | `loo`; hold-out traces are `LEAKAGE` |
-| 3 Adaptive correction | GPU-hours until error ≤ ε after 0 / 0.5 / 1 / 2 ns teacher vs a frozen conventional oracle | `teacher_curve`; never train on that oracle |
+| 3 Adaptive correction | Error reduction per GPU-hour on coordinates the prior gets wrong (ionic lock, mechanism), not a 1 μs TM6 mean-match | `correct`; GPU off until a named shot has `eq.pdb`; oracle never trains |
 
-Experiment 2 starts from crystals, not trajectories. The killer test is leave-one-protein-out on the GPCR activation family. One scored protein (`adrb2`) is `NOT_READY` for transfer. Experiment 3 is the acceleration curve: how much conventional MD to a specified error bar.
+Experiment 2 starts from crystals, not trajectories. `adaptamem loo` on a 10-protein catalog (β2AR, rhodopsin, A2A, μOR, M2, β1AR, κOR, 5-HT2A, CB1, D2). TM6 reaches ε on every fold except **5-HT2A**. Ionic lock fails on β2AR, A2A, and M2. Packing is hidden except κOR. Hold-out traces remain `LEAKAGE`. Experiment 3 is not “run 1 μs and match TM6.” It is: the CPU prior predicts a held-out protein; tiny MD runs only where the prior is unconfident or wrong (β2AR lock, M2 invented lock, 5-HT2A TM6, `pack_in_inactive_tm6`); the score is error reduction per GPU-hour vs a conventional oracle the method never sees. GPU stays off until a named shot has `eq.pdb`.
 
 Packing (`assembled.pdb`) is not a teacher. `oracle` requires `eq.pdb`. Image: CUDA **12.8** + conda-forge OpenMM with `cuda-version=12.8`. No CPU fallback on a billed GPU.
 

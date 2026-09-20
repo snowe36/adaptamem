@@ -22,6 +22,15 @@ def log(msg: str) -> None:
 
 def main() -> int:
     os.chdir(ROOT)
+    from adaptamem.correction import require_teacher_gpu
+    from adaptamem.errors import RefuseError
+
+    try:
+        require_teacher_gpu()
+    except RefuseError as exc:
+        log(exc.format())
+        print("ORACLE_FAIL", flush=True)
+        return 2
     workdir = Path(os.environ.get("ADAPTAMEM_WORKDIR") or "runs/oracle")
     ns = float(os.environ.get("ORACLE_NS") or "10")
     assembled = workdir / "assembled.pdb"

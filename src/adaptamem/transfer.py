@@ -73,16 +73,59 @@ def crystal_table(catalog: dict[str, Any], *, root: Path | None = None) -> dict[
         try:
             ina = _resolve(prot["inactive"], base)
             act = _resolve(prot["active"], base)
+            table[pid] = score_pair(
+                ina["path"],
+                act["path"],
+                prot.get("residues") or {},
+                inactive_chain=ina.get("chain"),
+                active_chain=act.get("chain"),
+            )
         except RefuseError:
             continue
-        table[pid] = score_pair(
-            ina["path"],
-            act["path"],
-            prot.get("residues") or {},
-            inactive_chain=ina.get("chain"),
-            active_chain=act.get("chain"),
-        )
     return table
+
+
+def switch_coupling(
+    table: dict[str, dict[str, dict[str, float]]],
+    *,
+    epsilon: float = 0.2,
+) -> dict[str, Any]:
+    """Do endpoint switches move together? Hypothesis C is lock slaved to TM6."""
+    rows = []
+    for pid, cvs in table.items():
+        tm6 = (cvs.get("tm6_ic") or {}).get("span")
+        lock = (cvs.get("ionic_lock") or {}).get("span")
+        pack = (cvs.get("tm3_tm6_pack") or {}).get("span")
+        npy = (cvs.get("npxxY") or {}).get("span")
+        rows.append(
+            {
+                "id": pid,
+                "tm6_span": tm6,
+                "lock_span": lock,
+                "pack_span": pack,
+                "npy_span": npy,
+                "lock_not_slaved": (
+                    tm6 is not None and lock is not None and tm6 >= epsilon and lock < epsilon
+                ),
+                "pack_hidden": pack is not None and pack < epsilon,
+            }
+        )
+    paired = [
+        (r["tm6_span"], r["lock_span"])
+        for r in rows
+        if r["tm6_span"] is not None and r["lock_span"] is not None
+    ]
+    return {
+        "experiment": "switch_coupling",
+        "gpu_hours": 0.0,
+        "n": len(rows),
+        "pearson_tm6_lock": _pearson([a for a, _ in paired], [b for _, b in paired]),
+        "lock_not_slaved": [r["id"] for r in rows if r["lock_not_slaved"]],
+        "pack_moves": [
+            r["id"] for r in rows if r["pack_span"] is not None and r["pack_span"] >= epsilon
+        ],
+        "rows": rows,
+    }
 
 
 def leave_one_out(
@@ -90,6 +133,7 @@ def leave_one_out(
     hold_out: str,
     *,
     traces: dict[str, list[float]] | None = None,
+    epsilon: float = 0.2,
 ) -> dict[str, Any]:
     """Predict the hold-out protein from other proteins' crystals. No trajectories."""
     if hold_out not in table:
@@ -115,15 +159,23 @@ def leave_one_out(
             continue
         lo_mu, lo_sd = _mean_sd(train_lo)
         hi_mu, hi_sd = _mean_sd(train_hi)
+        err_lo = abs(lo_mu - truth[name]["inactive"])
+        err_hi = abs(hi_mu - truth[name]["active"])
+        err_sp = abs(abs(hi_mu - lo_mu) - truth[name]["span"])
         pred[name] = {
             "inactive": {"mu": lo_mu, "sd": lo_sd},
             "active": {"mu": hi_mu, "sd": hi_sd},
             "span": {"mu": abs(hi_mu - lo_mu), "sd": (lo_sd**2 + hi_sd**2) ** 0.5},
             "truth": truth[name],
-            "error": {
-                "inactive": abs(lo_mu - truth[name]["inactive"]),
-                "active": abs(hi_mu - truth[name]["active"]),
-                "span": abs(abs(hi_mu - lo_mu) - truth[name]["span"]),
+            "error": {"inactive": err_lo, "active": err_hi, "span": err_sp},
+            "reached": {
+                "inactive": err_lo <= epsilon,
+                "active": err_hi <= epsilon,
+                "span": err_sp <= epsilon,
+            },
+            "unreliable": {
+                "inactive": prior_unreliable(err_lo, lo_sd),
+                "active": prior_unreliable(err_hi, hi_sd),
             },
         }
     return {
@@ -133,6 +185,26 @@ def leave_one_out(
         "gpu_hours": 0.0,
         "predictions": pred,
         "leaked": False,
+        "epsilon_nm": epsilon,
+    }
+
+
+def leave_one_out_sweep(
+    table: dict[str, dict[str, dict[str, float]]],
+    *,
+    epsilon: float = 0.2,
+) -> dict[str, Any]:
+    """Hold out each protein in turn. GPU-hours stay zero."""
+    folds: dict[str, Any] = {}
+    for pid in table:
+        folds[pid] = leave_one_out(table, pid, epsilon=epsilon)
+    return {
+        "experiment": "zero_shot_prior",
+        "gpu_hours": 0.0,
+        "n_proteins": len(table),
+        "epsilon_nm": epsilon,
+        "proteins": sorted(table),
+        "folds": folds,
     }
 
 
@@ -144,7 +216,7 @@ def teacher_curve(
     epsilon: float,
     gpu_hours: dict[float, float],
 ) -> dict[str, Any]:
-    """Error vs held-out oracle after 0 / 0.5 / 1 / 2 ns. Oracle never trains the prior."""
+    """ns ladder. Experiment 3 score is correction_curve (error reduction per GPU-hour)."""
     rows = []
     hours_to_eps = None
     for ns in TEACHER_NS:
@@ -189,6 +261,20 @@ def _resolve(spec: dict[str, Any], root: Path) -> dict[str, Any]:
         raise RefuseError(f"no structure {path}", code="STRUCTURE")
     chain = spec.get("chain")
     return {"path": path, "chain": str(chain) if chain else None}
+
+
+def _pearson(xs: list[float], ys: list[float]) -> float:
+    n = len(xs)
+    if n < 3 or n != len(ys):
+        return 0.0
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True))
+    dx = sum((x - mx) ** 2 for x in xs) ** 0.5
+    dy = sum((y - my) ** 2 for y in ys) ** 0.5
+    if dx == 0.0 or dy == 0.0:
+        return 0.0
+    return num / (dx * dy)
 
 
 def _mean_sd(xs: list[float]) -> tuple[float, float]:

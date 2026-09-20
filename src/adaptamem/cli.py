@@ -129,6 +129,11 @@ def main(argv: list[str] | None = None) -> int:
         help="CPU: leave-one-protein-out crystal prior. Hold-out traces are LEAKAGE.",
     )
     p_loo.add_argument("--hold-out", default="adrb2")
+    p_loo.add_argument(
+        "--sweep",
+        action="store_true",
+        help="Hold out each catalog protein in turn",
+    )
     p_loo.add_argument("--catalog", type=Path, default=None)
     p_loo.add_argument("--out", type=Path, required=True)
     p_loo.add_argument(
@@ -137,6 +142,15 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Repo root for catalog-relative PDB paths",
     )
+
+    p_corr = sub.add_parser(
+        "correct",
+        help="CPU: Experiment 3 protocol. GPU stays off until a named shot has eq.pdb.",
+    )
+    p_corr.add_argument("--hold-out", default=None)
+    p_corr.add_argument("--catalog", type=Path, default=None)
+    p_corr.add_argument("--out", type=Path, required=True)
+    p_corr.add_argument("--root", type=Path, default=None)
 
     p_or = sub.add_parser(
         "oracle",
@@ -273,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
             return _decide(args)
         if args.cmd == "loo":
             return _loo(args)
+        if args.cmd == "correct":
+            return _correct(args)
         if args.cmd == "oracle":
             return _oracle(args)
         if args.cmd == "equilibrate":
@@ -511,27 +527,118 @@ def _decide(args: argparse.Namespace) -> int:
 
 
 def _loo(args: argparse.Namespace) -> int:
-    from adaptamem.transfer import crystal_table, leave_one_out, load_catalog
+    from adaptamem.transfer import (
+        crystal_table,
+        leave_one_out,
+        leave_one_out_sweep,
+        load_catalog,
+    )
 
     cat = load_catalog(args.catalog)
     root = Path(args.root) if args.root else Path.cwd()
     table = crystal_table(cat, root=root)
-    payload = leave_one_out(table, str(args.hold_out))
+    eps = float(cat.get("epsilon_nm") or 0.2)
+    if args.sweep:
+        payload = leave_one_out_sweep(table, epsilon=eps)
+        print(f"LOO  sweep n={payload['n_proteins']}  gpu-h=0")
+        for pid, fold in payload["folds"].items():
+            tm6 = (fold.get("predictions") or {}).get("tm6_ic") or {}
+            err = (tm6.get("error") or {}).get("span")
+            reached = (tm6.get("reached") or {}).get("span")
+            print(f"  hold-out={pid}  tm6_span_err={err}  reached={reached}")
+    else:
+        payload = leave_one_out(table, str(args.hold_out), epsilon=eps)
+        print(f"LOO  hold-out={payload['hold_out']}  train={payload['train']}  gpu-h=0")
+        for name, spec in (payload.get("predictions") or {}).items():
+            err = spec["error"]
+            reached = spec.get("reached") or {}
+            print(
+                f"  {name}  inactive_err={err['inactive']:.3f}  "
+                f"active_err={err['active']:.3f}  span_err={err['span']:.3f}  "
+                f"span_reached={reached.get('span')}"
+            )
     Path(args.out).write_text(json.dumps(payload, indent=2) + "\n")
-    print(f"LOO  hold-out={payload['hold_out']}  train={payload['train']}  gpu-h=0")
-    for name, spec in (payload.get("predictions") or {}).items():
-        err = spec["error"]
-        print(
-            f"  {name}  inactive_err={err['inactive']:.3f}  "
-            f"active_err={err['active']:.3f}  span_err={err['span']:.3f}"
+    print(args.out)
+    return 0
+
+
+def _correct(args: argparse.Namespace) -> int:
+    from adaptamem.correction import (
+        MECHANISM_COORDINATE,
+        catalog_identities,
+        classify_fold,
+        correction_curve,
+        gated_observables,
+        load_experiment3,
+        transfer_vs_distance,
+    )
+    from adaptamem.transfer import crystal_table, leave_one_out, leave_one_out_sweep, load_catalog
+
+    proto = load_experiment3()
+    cat = load_catalog(args.catalog)
+    root = Path(args.root) if args.root else Path.cwd()
+    table = crystal_table(cat, root=root)
+    eps = float(proto.get("epsilon_nm") or cat.get("epsilon_nm") or 0.2)
+    hold = str(args.hold_out or proto["hold_out"]["primary"])
+    fold = leave_one_out(table, hold, epsilon=eps)
+    sweep = leave_one_out_sweep(table, epsilon=eps)
+    roles = classify_fold(fold, epsilon=eps)
+    roles[MECHANISM_COORDINATE] = "mechanism"
+    gated = gated_observables(fold, epsilon=eps)
+    if MECHANISM_COORDINATE not in gated:
+        gated = [*gated, MECHANISM_COORDINATE]
+    identities = catalog_identities(cat, root=root)
+    dist = {
+        cv: transfer_vs_distance(sweep, identities, cv=cv)
+        for cv in ("tm6_ic", "ionic_lock", "tm3_tm6_pack", "npxxY")
+    }
+    sweep_roles = {pid: classify_fold(f, epsilon=eps) for pid, f in sweep["folds"].items()}
+    curves = {}
+    for name in gated:
+        spec = (fold.get("predictions") or {}).get(name)
+        if not spec:
+            continue
+        curves[name] = correction_curve(
+            zero_shot=float(spec["span"]["mu"]),
+            teacher_mu={},
+            oracle_mu=float(spec["truth"]["span"]),
+            epsilon=eps,
+            reference="crystal_endpoints",
         )
+    payload = {
+        "experiment": "adaptive_correction",
+        "gpu": False,
+        "hold_out": hold,
+        "adversarial": proto["hold_out"]["adversarial"],
+        "hard": proto["hold_out"].get("hard"),
+        "roles": roles,
+        "gated": gated,
+        "sweep_roles": sweep_roles,
+        "named_questions": proto.get("named_questions"),
+        "teacher_budgets_gpu_hours": proto["teacher"]["budgets_gpu_hours"],
+        "oracle": proto["oracle"],
+        "zero_shot_curves": curves,
+        "fold": fold,
+        "distance": {
+            f"{a}|{b}": v for (a, b), v in identities.items()
+        },
+        "transfer_vs_distance": dist,
+        "refuse": "NOT_READY",
+        "reason": "experiment 3 protocol is frozen; GPU off until a named shot has eq.pdb",
+    }
+    Path(args.out).write_text(json.dumps(payload, indent=2) + "\n")
+    print(f"CORRECT  hold-out={hold}  gpu=False  gated={gated}")
+    for name, role in roles.items():
+        print(f"  {name}  {role}")
     print(args.out)
     return 0
 
 
 def _oracle(args: argparse.Namespace) -> int:
+    from adaptamem.correction import require_teacher_gpu
     from adaptamem.gpu_contract import require_eq_pdb
 
+    require_teacher_gpu()
     if not have_assembled(args.workdir):
         raise RefuseError(
             f"no assembled system in {args.workdir}; CPU prepare first, then oracle",
@@ -561,6 +668,9 @@ def _equilibrate(workdir: Path, short: bool) -> int:
 
 
 def _gpu(args: argparse.Namespace) -> int:
+    from adaptamem.correction import require_teacher_gpu
+
+    require_teacher_gpu()
     from importlib.util import module_from_spec, spec_from_file_location
 
     candidates = [
@@ -615,7 +725,10 @@ def _bench(workdir: Path, steps: int | None, ladder: bool) -> int:
 
 
 def _produce(args: argparse.Namespace) -> int:
+    from adaptamem.correction import require_teacher_gpu
     from adaptamem.produce import format_produce, produce
+
+    require_teacher_gpu()
 
     r = produce(
         args.workdir,

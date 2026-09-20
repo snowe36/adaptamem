@@ -39,6 +39,10 @@ The oracle trajectory may be used to **evaluate** error and, where explicitly sp
 
 Do not launch a β2AR (or other) GPU job until the crystal gate passes and CPU inference names a shot. Packing is not a teacher: `oracle` requires `eq.pdb`. Matching stack: CUDA 12.8 + conda-forge OpenMM `cuda-version=12.8`. No CPU fallback on a billed GPU. If the oracle CV span is already within ε, abort: that is another 5EH4.
 
-Leave-one-protein-out: the evaluation protein's conventional trajectory, oracle π, or crystal-derived labels used as *training* input is `LEAKAGE`. Crystals of *other* proteins may train the prior. Score zero-shot, then 0.5 / 1 / 2 ns teacher, against a held-out reference the method never sees.
+Leave-one-protein-out: the evaluation protein's conventional trajectory, oracle π, or crystal-derived labels used as *training* input is `LEAKAGE`. Crystals of *other* proteins may train the prior.
 
-Success: 10–100× less GPU than 1 μs conventional at matched ε, or the same answer with no production MD. Failure: a smarter `select`.
+Experiment 2 (done): TM6 crystal endpoints transfer across the catalog at 0 GPU-h. That is not Experiment 3.
+
+Experiment 3 score is **error reduction per GPU-hour** on a GPU-hour axis `(0, 0.05, 0.10, 0.25, 1.0)` plus a conventional oracle as the reference — not a 1 μs TM6 mean-match. Observables: TM6 (known transfer), ionic lock (known failure), TM3–TM6 packing (trivial if crystal span < ε), `pack_in_inactive_tm6` (mechanism; crystals cannot score). Tiny MD only where `should_teach`. Crystal endpoints are not an oracle; no acceleration claim against them.
+
+`experiment3.yaml` `gpu: false` until a named shot has `eq.pdb`. Do not create Runpods while that flag is false. Success: 10–100× less GPU than 1 μs conventional at matched ε, or the same answer with no production MD. Failure: a smarter `select`.

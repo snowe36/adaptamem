@@ -8,8 +8,8 @@ out="${2:-$ROOT/data/structures/${id}.pdb}"
 mkdir -p "$(dirname "$out")"
 url="https://files.rcsb.org/download/${id}.pdb"
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$url" -o "$out"
+  curl -fsSL -A "adaptamem/0.1 (https://github.com/snowe36/adaptamem)" "$url" -o "$out"
 else
-  wget -q "$url" -O "$out"
+  wget -q --user-agent="adaptamem/0.1" "$url" -O "$out"
 fi
 echo "$out"

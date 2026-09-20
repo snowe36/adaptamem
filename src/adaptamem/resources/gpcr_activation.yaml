@@ -3,10 +3,11 @@ observable_family: activation
 epsilon_nm: 0.2
 held_out_default: adrb2
 notes: >
-  Experiment 2 input. Inactive/active X-ray (or EM) pairs, one biological copy.
-  Residue numbers are this protein's sequence, mapped to BW 3.50–6.34 / 3.50–6.30 /
-  3.40–6.44 / 7.53–3.50. Score crystals only until a dynamics corpus exists.
-  Holding out adrb2 while training on adrb2 traces is LEAKAGE.
+  Inactive/active X-ray pairs, one biological copy. Residue numbers map to
+  BW 3.50–6.34 / 3.50–6.30 / 3.40–6.44 / 7.53–3.50. 2YDO skipped (thermostable
+  A2A, TM6 span ~ε). 4N6H/6PT2 skipped (TM6 span 0.03 nm). 4GRV skipped (R3.50→Ala).
+  5-HT2A 6A94/6WHA, CB1 5TGZ/6KPG, D2 6CM4/7JVR added as harder hold-outs (EM actives).
+  D2 packing omitted (inactive 3.40 is I122A).
 
 proteins:
   - id: adrb2
@@ -19,3 +20,92 @@ proteins:
       ionic_lock: [131, 268]
       tm3_tm6_pack: [121, 282]
       npxxY: [326, 131]
+  - id: opsd
+    name: rhodopsin
+    uniprot: P02699
+    inactive: {pdb: 1U19, chain: A, file: data/structures/1U19.pdb}
+    active: {pdb: 3PQR, chain: A, file: data/structures/3PQR.pdb}
+    residues:
+      tm6_ic: [135, 251]
+      ionic_lock: [135, 247]
+      tm3_tm6_pack: [125, 261]
+      npxxY: [306, 135]
+  - id: aa2ar
+    name: A2A
+    uniprot: P29274
+    inactive: {pdb: 3EML, chain: A, file: data/structures/3EML.pdb}
+    active: {pdb: 5G53, chain: A, file: data/structures/5G53.pdb}
+    residues:
+      tm6_ic: [102, 233]
+      ionic_lock: [102, 228]
+      tm3_tm6_pack: [92, 242]
+      npxxY: [288, 102]
+  - id: oprm
+    name: muOR
+    uniprot: P35372
+    inactive: {pdb: 4DKL, chain: A, file: data/structures/4DKL.pdb}
+    active: {pdb: 5C1M, chain: A, file: data/structures/5C1M.pdb}
+    residues:
+      tm6_ic: [165, 283]
+      ionic_lock: [165, 279]
+      tm3_tm6_pack: [155, 293]
+      npxxY: [336, 165]
+  - id: acm2
+    name: M2
+    uniprot: P08172
+    inactive: {pdb: 3UON, chain: A, file: data/structures/3UON.pdb}
+    active: {pdb: 4MQS, chain: A, file: data/structures/4MQS.pdb}
+    residues:
+      tm6_ic: [121, 386]
+      ionic_lock: [121, 382]
+      tm3_tm6_pack: [111, 396]
+      npxxY: [440, 121]
+  - id: adrb1
+    name: turkey_beta1AR
+    uniprot: P07700
+    inactive: {pdb: 2VT4, chain: B, file: data/structures/2VT4.pdb}
+    active: {pdb: 6H7N, chain: A, file: data/structures/6H7N.pdb}
+    residues:
+      tm6_ic: [139, 289]
+      ionic_lock: [139, 285]
+      tm3_tm6_pack: [129, 299]
+      npxxY: [343, 139]
+  - id: oprk
+    name: kappaOR
+    uniprot: P41145
+    inactive: {pdb: 4DJH, chain: A, file: data/structures/4DJH.pdb}
+    active: {pdb: 6B73, chain: A, file: data/structures/6B73.pdb}
+    residues:
+      tm6_ic: [156, 274]
+      ionic_lock: [156, 270]
+      tm3_tm6_pack: [146, 284]
+      npxxY: [330, 156]
+  - id: htr2a
+    name: 5HT2A
+    uniprot: P28223
+    inactive: {pdb: 6A94, chain: A, file: data/structures/6A94.pdb}
+    active: {pdb: 6WHA, chain: A, file: data/structures/6WHA.pdb, method: EM}
+    residues:
+      tm6_ic: [173, 322]
+      ionic_lock: [173, 318]
+      tm3_tm6_pack: [163, 332]
+      npxxY: [380, 173]
+  - id: cnr1
+    name: CB1
+    uniprot: P21554
+    inactive: {pdb: 5TGZ, chain: A, file: data/structures/5TGZ.pdb}
+    active: {pdb: 6KPG, chain: R, file: data/structures/6KPG.pdb, method: EM}
+    residues:
+      tm6_ic: [214, 342]
+      ionic_lock: [214, 338]
+      tm3_tm6_pack: [204, 352]
+      npxxY: [397, 214]
+  - id: drd2
+    name: D2
+    uniprot: P14416
+    inactive: {pdb: 6CM4, chain: A, file: data/structures/6CM4.pdb}
+    active: {pdb: 7JVR, chain: R, file: data/structures/7JVR.pdb, method: EM}
+    residues:
+      tm6_ic: [132, 372]
+      ionic_lock: [132, 368]
+      npxxY: [426, 132]

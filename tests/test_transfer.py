@@ -7,9 +7,11 @@ from adaptamem.pipeline import EXPERIMENTS
 from adaptamem.transfer import (
     crystal_table,
     leave_one_out,
+    leave_one_out_sweep,
     load_catalog,
     prior_unreliable,
     score_pair,
+    switch_coupling,
     teacher_curve,
 )
 
@@ -94,9 +96,51 @@ def test_score_pair_from_two_pdbs(tmp_path: Path):
     assert scored["tm6_ic"]["span"] == pytest.approx(0.70, abs=0.01)
 
 
-def test_adrb2_alone_is_not_a_zero_shot_prior():
+def test_switch_coupling_flags_lock_not_slaved_to_tm6():
+    table = {
+        "p1": {
+            "tm6_ic": {"span": 0.70},
+            "ionic_lock": {"span": 0.65},
+            "tm3_tm6_pack": {"span": 0.03},
+        },
+        "p2": {
+            "tm6_ic": {"span": 0.60},
+            "ionic_lock": {"span": 0.55},
+            "tm3_tm6_pack": {"span": 0.04},
+        },
+        "acm2": {
+            "tm6_ic": {"span": 0.54},
+            "ionic_lock": {"span": 0.14},
+            "tm3_tm6_pack": {"span": 0.02},
+        },
+        "oprk": {
+            "tm6_ic": {"span": 0.57},
+            "ionic_lock": {"span": 0.69},
+            "tm3_tm6_pack": {"span": 0.28},
+        },
+    }
+    out = switch_coupling(table)
+    assert out["gpu_hours"] == 0.0
+    assert out["lock_not_slaved"] == ["acm2"]
+    assert out["pack_moves"] == ["oprk"]
+
+
+def test_adrb2_catalog_loo():
     table = crystal_table(load_catalog(), root=ROOT)
-    assert "adrb2" in table
-    with pytest.raises(RefuseError) as ei:
-        leave_one_out(table, "adrb2")
-    assert ei.value.code == "NOT_READY"
+    if "adrb2" not in table:
+        pytest.skip("need 2RH1/3SN6 crystals")
+    if len(table) < 3:
+        with pytest.raises(RefuseError) as ei:
+            leave_one_out(table, "adrb2")
+        assert ei.value.code == "NOT_READY"
+        return
+    out = leave_one_out(table, "adrb2")
+    assert out["gpu_hours"] == 0.0
+    assert "adrb2" not in out["train"]
+    assert "tm6_ic" in out["predictions"]
+    sweep = leave_one_out_sweep(table)
+    assert sweep["n_proteins"] == len(table)
+    assert sweep["gpu_hours"] == 0.0
+    if "htr2a" in table:
+        hard = leave_one_out(table, "htr2a")
+        assert hard["predictions"]["tm6_ic"]["reached"]["span"] is False

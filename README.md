@@ -20,7 +20,7 @@ A membrane protein PDB plus “run 100 ns” is a recipe. Adaptive walker alloca
 
 **Can a small amount of trustworthy MD, combined with structural priors, predict the long-time observable without integrating the missing trajectory?**
 
-The destination is a transferable dynamics prior: trained on other proteins, evaluated on a **held-out** protein, with calibrated uncertainty, at substantially less compute than conventional MD. Three demonstrations: (1) mechanistic teacher selection on β2AR, (2) leave-one-protein-out crystal/dynamics prior, (3) tiny MD until error ≤ ε vs a frozen conventional oracle. A bigger corpus can learn conserved switches a tiny β2AR shot will never see. That is only science if the evaluation protein was not memorized.
+The destination is a transferable dynamics prior: trained on other proteins, evaluated on a **held-out** protein, with calibrated uncertainty, at substantially less compute than conventional MD. Three demonstrations: (1) mechanistic teacher selection on β2AR, (2) leave-one-protein-out crystal prior (`adaptamem loo --hold-out adrb2`) — TM6 transfers on 9/10 catalog proteins at 0 GPU-h; **5-HT2A is the first TM6 miss**; ionic lock fails on β2AR/A2A/M2; packing is trivial except κOR — (3) tiny MD only where that prior is wrong, scored as error reduction per GPU-hour vs a frozen conventional oracle (`adaptamem correct`). GPU is off until a named shot has `eq.pdb`.
 
 Do not make “generate a realistic trajectory” the first target. Predict the CV / ensemble / contacts plus uncertainty. Conventional MD remains the held-out reference. More MD that stops sooner is a failure mode.
 
