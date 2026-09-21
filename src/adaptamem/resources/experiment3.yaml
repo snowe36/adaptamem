@@ -1,5 +1,9 @@
 experiment: adaptive_correction
 gpu: false
+question: >
+  Can a tiny conventional-MD teacher detect and correct a deliberately
+  demonstrated failure of a transferable CPU dynamics prior?
+manifest: src/adaptamem/resources/prior_correction_v1.yaml
 epsilon_nm: 0.2
 acceleration_bar: 10
 do_not_start: [2RH1, 3SN6]
@@ -16,7 +20,7 @@ hold_out:
 observables:
   tm6_ic:
     role: transferable
-    why: every LOO fold reaches ε on TM6 span
+    why: nine of ten LOO folds reach ε; 5-HT2A is the miss
   ionic_lock:
     role: failure
     why: LOO span misses ε on adrb2, aa2ar, acm2
@@ -51,6 +55,37 @@ stopping:
   - never another 1D TM6 shot from 2RH1/3SN6
   - if every gated observable already within ε at 0 GPU-h: DONE, no GPU
 
+named_shot:
+  protein: htr2a
+  start: 6A94_A
+  workdir: runs/htr2a_6a94
+  coordinate: tm6_ic
+  assembled: true
+  n_atoms: 101635
+  eq_pdb: false
+  also:
+    - protein: acm2
+      start: 3UON
+      workdir: runs/acm2_3uon
+      coordinate: ionic_lock
+      assembled: true
+      n_atoms: 192667
+      eq_pdb: false
+    - protein: htr2a
+      start: 6WHA_A
+      workdir: runs/htr2a_6wha
+      coordinate: tm6_ic
+      assembled: true
+      n_atoms: 74208
+      eq_pdb: false
+    - protein: acm2
+      start: 4MQS_A
+      workdir: runs/acm2_4mqs
+      coordinate: ionic_lock
+      assembled: true
+      n_atoms: 148763
+      eq_pdb: false
+
 named_questions:
   - protein: adrb2
     coordinate: ionic_lock
@@ -58,6 +93,11 @@ named_questions:
   - protein: adrb2
     coordinate: pack_in_inactive_tm6
     why: BRIDGE/MECHANISM; packing hidden at endpoints
+  - protein: acm2
+    coordinate: ionic_lock
+    why: adversarial hold-out; prior invents a lock opening the crystal does not show
   - protein: htr2a
     coordinate: tm6_ic
+    start: 6A94_A
+    workdir: runs/htr2a_6a94
     why: hard hold-out; first catalog protein where TM6 zero-shot misses ε

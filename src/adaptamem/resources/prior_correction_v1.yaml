@@ -1,0 +1,133 @@
+experiment: prior_correction_v1
+frozen: true
+gpu: false
+epsilon_nm: 0.2
+question: >
+  Can a tiny conventional-MD teacher detect and correct a deliberately
+  demonstrated failure of a transferable CPU dynamics prior?
+
+hold_out_protein_traces: LEAKAGE
+do_not_start: [2RH1, 3SN6]
+do_not_retarget_after_seeing_trajectory: true
+
+controls:
+  - protein: adrb2
+    cv: tm6_ic
+    class: transferable
+    workdirs: []
+    crystal:
+      inactive_nm: 0.8395175459750678
+      active_nm: 1.5410171251481923
+      span_nm: 0.7014995791731246
+    prior:
+      inactive: {mu: 0.8429285012005722, sd: 0.1380495231673281}
+      active: {mu: 1.4398888996615147, sd: 0.12917544255970861}
+      span: {mu: 0.5969603984609425, sd: 0.1890607463415482}
+    error:
+      inactive: 0.0034109552255043862
+      active: 0.10112822548667766
+      span: 0.10453918071218204
+    reached: {inactive: true, active: true, span: true}
+    unreliable: {inactive: false, active: false}
+    teacher: skip
+    hypothesis: TM6 already within ε; no GPU.
+
+targets:
+  - protein: htr2a
+    name: 5-HT2A
+    cv: tm6_ic
+    class: out_of_prior
+    workdirs:
+      inactive: runs/htr2a_6a94
+      active: runs/htr2a_6wha
+    assembled_nm: {inactive: 0.8807, active: 1.2941}
+    crystal:
+      inactive_nm: 0.8806681611140489
+      active_nm: 1.2941041495953876
+      span_nm: 0.41343598848133867
+    prior:
+      inactive: {mu: 0.8383562106295742, sd: 0.13732287085978617}
+      active: {mu: 1.4673236747229375, sd: 0.12025498034290305}
+      span: {mu: 0.6289674640933632, sd: 0.18253446567277512}
+    error:
+      inactive: 0.04231195048447467
+      active: 0.1732195251275499
+      span: 0.21553147561202457
+    reached: {inactive: true, active: true, span: false}
+    unreliable: {inactive: false, active: false}
+    expected_correction: toward_crystal
+    hypothesis: >
+      Short unbiased MD stays near the crystallographic TM6 endpoints
+      (0.881 / 1.294 nm, span 0.413). It does not support the prior's
+      larger opening (span 0.629, active 1.467).
+    question: >
+      Does short unbiased MD support the prior's predicted larger TM6
+      opening, or does the protein remain near the crystallographic
+      inactive/active geometry?
+
+  - protein: acm2
+    name: M2
+    cv: ionic_lock
+    class: mechanistic_coordinate_failure
+    workdirs:
+      inactive: runs/acm2_3uon
+      active: runs/acm2_4mqs
+    assembled_nm: {inactive: 1.4093, active: 1.5474}
+    crystal:
+      inactive_nm: 1.409236623140344
+      active_nm: 1.547376266458808
+      span_nm: 0.13813964331846407
+    prior:
+      inactive: {mu: 0.9310031495229827, sd: 0.13845492055384823}
+      active: {mu: 1.5721472332543494, sd: 0.20320367022283645}
+      span: {mu: 0.6411440837313667, sd: 0.245889195813081}
+    error:
+      inactive: 0.47823347361736124
+      active: 0.02477096679554136
+      span: 0.5030044404129026
+    reached: {inactive: false, active: true, span: false}
+    unreliable: {inactive: true, active: false}
+    expected_correction: toward_crystal
+    hypothesis: >
+      Short MD keeps the ionic lock near the crystal (1.409 / 1.547 nm,
+      span 0.138). It does not open by the prior's 0.641 nm. The prior
+      invented a switch; inactive lock is already unreliable
+      (error/sd > 2).
+    question: >
+      Does short MD support the prior's predicted ionic-lock opening,
+      or does the lock remain near the crystal geometry?
+
+teacher:
+  protocol: nvt_after_eq
+  skip_npt_if_qc_ok: true
+  packing_is_not_a_teacher: true
+  require: eq.pdb
+  starts: both_crystal_basins
+  ns_per_start: 2.0
+  budgets_gpu_hours: [0.0, 0.05, 0.10, 0.25, 1.0]
+  max_gpu_hours: 1.0
+  score: mean_and_span_of_named_cv_only
+  metric: error_reduction_per_gpu_hour
+  stopping_rule:
+    - named-CV teacher error vs crystal <= epsilon
+    - or 1 GPU-h exhausted
+    - never retarget the CV after seeing the trajectory
+    - never another 1D TM6 shot from 2RH1/3SN6
+
+oracle:
+  held_out: true
+  trains_prior: false
+  this_rung_reference: crystal_endpoints
+  conventional_md: not_purchased
+  note: >
+    The first GPU hour scores local teacher dynamics against the frozen
+    crystal endpoints and the frozen prior. A 1 μs conventional trajectory
+    is a later, independent oracle. It must not redefine these targets.
+
+success:
+  - prior_error_before
+  - teacher_corrected_error
+  - GPU_hours_to_correction
+  - uncertainty_calibration
+
+eq_pdb: false

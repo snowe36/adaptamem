@@ -570,6 +570,9 @@ def _correct(args: argparse.Namespace) -> int:
         correction_curve,
         gated_observables,
         load_experiment3,
+        load_prior_correction,
+        load_target_teachers,
+        score_prior_correction,
         transfer_vs_distance,
     )
     from adaptamem.transfer import crystal_table, leave_one_out, leave_one_out_sweep, load_catalog
@@ -626,10 +629,15 @@ def _correct(args: argparse.Namespace) -> int:
         "refuse": "NOT_READY",
         "reason": "experiment 3 protocol is frozen; GPU off until a named shot has eq.pdb",
     }
+    man = load_prior_correction()
+    traces, hours = load_target_teachers(man, root=root)
+    payload["prior_correction"] = score_prior_correction(man, traces, gpu_hours=hours)
     Path(args.out).write_text(json.dumps(payload, indent=2) + "\n")
     print(f"CORRECT  hold-out={hold}  gpu=False  gated={gated}")
     for name, role in roles.items():
         print(f"  {name}  {role}")
+    pc = payload["prior_correction"]
+    print(f"  prior_correction  awaiting_eq={pc['awaiting_eq']}  gpu-h={pc['gpu_hours']}")
     print(args.out)
     return 0
 

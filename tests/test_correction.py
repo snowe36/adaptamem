@@ -7,10 +7,16 @@ from adaptamem.correction import (
     adaptive_step,
     classify_observable,
     correction_curve,
+    correction_direction,
     disagreement,
     load_experiment3,
+    load_prior_correction,
+    load_target_teachers,
+    named_teacher_workdirs,
     pairwise_identity,
     posterior_update,
+    refuse_forbidden_starts,
+    score_prior_correction,
     should_teach,
     transfer_vs_distance,
 )
@@ -30,6 +36,31 @@ def test_experiment3_is_frozen_gpu_off():
     assert proto["observables"]["ionic_lock"]["role"] == "failure"
     assert proto["observables"]["tm3_tm6_pack"]["role"] == "trivial"
     assert proto["observables"][MECHANISM_COORDINATE]["role"] == "mechanism"
+
+
+def test_prior_correction_v1_is_frozen_before_eq():
+    man = load_prior_correction()
+    assert man["experiment"] == "prior_correction_v1"
+    assert man["frozen"] is True
+    assert man["gpu"] is False
+    assert man["eq_pdb"] is False
+    assert man["oracle"]["held_out"] is True
+    assert man["do_not_retarget_after_seeing_trajectory"] is True
+    htr = next(t for t in man["targets"] if t["protein"] == "htr2a")
+    acm = next(t for t in man["targets"] if t["protein"] == "acm2")
+    b2 = man["controls"][0]
+    assert htr["cv"] == "tm6_ic"
+    assert htr["error"]["span"] == pytest.approx(0.216, abs=0.002)
+    assert htr["reached"]["span"] is False
+    assert htr["expected_correction"] == "toward_crystal"
+    assert acm["cv"] == "ionic_lock"
+    assert acm["error"]["span"] == pytest.approx(0.503, abs=0.002)
+    assert acm["unreliable"]["inactive"] is True
+    assert b2["protein"] == "adrb2"
+    assert b2["teacher"] == "skip"
+    assert b2["reached"]["span"] is True
+    assert man["teacher"]["max_gpu_hours"] == 1.0
+    assert man["teacher"]["require"] == "eq.pdb"
 
 
 def test_packing_small_span_is_trivial_not_transfer():
@@ -189,3 +220,119 @@ def test_mechanism_stat_refuses_tm6_only_teacher():
     with pytest.raises(RefuseError) as ei:
         mechanism_stat([0.8, 0.9], [], inactive_hi=1.0)
     assert ei.value.code == "NOT_READY"
+
+
+def test_named_teacher_workdirs_are_not_beta2ar():
+    wds = named_teacher_workdirs()
+    names = {p.name for p in wds}
+    assert names == {"htr2a_6a94", "htr2a_6wha", "acm2_3uon", "acm2_4mqs"}
+    refuse_forbidden_starts(wds)
+    with pytest.raises(RefuseError) as ei:
+        refuse_forbidden_starts([Path("runs/2rh1")])
+    assert ei.value.code == "MECHANISM"
+
+
+def test_zero_gpu_hour_score_awaits_eq_and_does_not_read_assemble():
+    man = load_prior_correction()
+    traces, hours = load_target_teachers(man, root=Path.cwd())
+    assert traces == {}
+    assert hours == 0.0
+    scored = score_prior_correction(man, traces, gpu_hours=hours)
+    assert scored["awaiting_eq"] is True
+    assert scored["compression"] is None
+    assert scored["gpu_hours_to_correction"] is None
+    htr = next(t for t in scored["targets"] if t["protein"] == "htr2a")
+    assert htr["status"] == "awaiting_eq"
+    assert htr["teacher"] is None
+    assert htr["prior_error_before"]["span"] == pytest.approx(0.216, abs=0.002)
+    assert scored["controls"][0]["protein"] == "adrb2"
+    assert scored["controls"][0]["status"] == "skip"
+
+
+def test_teacher_near_crystal_corrects_5ht2a_and_m2():
+    man = load_prior_correction()
+    teachers = {
+        "htr2a": {
+            "inactive": {"tm6_ic": [0.880, 0.882, 0.879]},
+            "active": {"tm6_ic": [1.294, 1.293, 1.295]},
+        },
+        "acm2": {
+            "inactive": {"ionic_lock": [1.409, 1.410, 1.408]},
+            "active": {"ionic_lock": [1.547, 1.548, 1.546]},
+        },
+    }
+    scored = score_prior_correction(man, teachers, gpu_hours=0.25)
+    assert scored["awaiting_eq"] is False
+    htr = next(t for t in scored["targets"] if t["protein"] == "htr2a")
+    acm = next(t for t in scored["targets"] if t["protein"] == "acm2")
+    assert htr["direction"]["span"] == "toward_crystal"
+    assert acm["direction"]["span"] == "toward_crystal"
+    assert htr["teacher_corrected_error"]["span"] < htr["prior_error_before"]["span"]
+    assert acm["teacher_corrected_error"]["span"] < acm["prior_error_before"]["span"]
+    assert htr["matched_expectation"] is True
+    assert acm["matched_expectation"] is True
+    assert htr["reached"]["span"] is True
+    assert scored["gpu_hours_to_correction"] == 0.25
+    assert htr["posterior_span"]["mu"] < man["targets"][0]["prior"]["span"]["mu"]
+
+
+def test_teacher_that_opens_with_the_prior_is_not_a_crystal_correction():
+    man = load_prior_correction()
+    teachers = {
+        "htr2a": {
+            "inactive": {"tm6_ic": [0.838, 0.839]},
+            "active": {"tm6_ic": [1.467, 1.468]},
+        }
+    }
+    scored = score_prior_correction(man, teachers, gpu_hours=0.25)
+    htr = next(t for t in scored["targets"] if t["protein"] == "htr2a")
+    assert htr["direction"]["active"] == "supports_prior"
+    assert htr["direction"]["span"] == "supports_prior"
+    assert htr["matched_expectation"] is False
+
+
+def test_retarget_and_oracle_and_beta2ar_teacher_are_refused():
+    man = load_prior_correction()
+    teachers = {
+        "htr2a": {
+            "inactive": {"tm6_ic": [0.88], "ionic_lock": [0.93]},
+            "active": {"tm6_ic": [1.29], "ionic_lock": [1.10]},
+        }
+    }
+    with pytest.raises(RefuseError) as ei:
+        score_prior_correction(man, teachers, gpu_hours=0.1, oracle_mu=0.41)
+    assert ei.value.code == "LEAKAGE"
+    with pytest.raises(RefuseError) as ei:
+        score_prior_correction(man, teachers, gpu_hours=0.1, score_cv="ionic_lock")
+    assert ei.value.code == "MECHANISM"
+    with pytest.raises(RefuseError) as ei:
+        score_prior_correction(
+            man,
+            {
+                "adrb2": {
+                    "inactive": {"tm6_ic": [0.84]},
+                    "active": {"tm6_ic": [1.54]},
+                }
+            },
+            gpu_hours=0.1,
+        )
+    assert ei.value.code == "MECHANISM"
+
+
+def test_extra_cvs_are_recorded_but_named_cv_is_scored():
+    man = load_prior_correction()
+    teachers = {
+        "htr2a": {
+            "inactive": {"tm6_ic": [0.881, 0.880], "tm3_tm6_pack": [0.83, 0.84]},
+            "active": {"tm6_ic": [1.294, 1.295], "tm3_tm6_pack": [0.81, 0.80]},
+        }
+    }
+    scored = score_prior_correction(man, teachers, gpu_hours=0.05)
+    htr = next(t for t in scored["targets"] if t["protein"] == "htr2a")
+    assert htr["cv"] == "tm6_ic"
+    assert htr["teacher"]["span"]["mu"] == pytest.approx(0.414, abs=0.01)
+
+
+def test_correction_direction_helpers():
+    assert correction_direction(1.29, 1.47, 1.29, epsilon=0.2) == "toward_crystal"
+    assert correction_direction(1.47, 1.47, 1.29, epsilon=0.2) == "supports_prior"

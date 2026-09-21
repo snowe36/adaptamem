@@ -1,0 +1,45 @@
+name: htr2a_6a94
+structure: ../data/structures/6A94_A.pdb
+notes: >
+  Hard hold-out. 5-HT2A inactive X-ray 6A94 chain A; TM6 LOO span error 0.22 nm.
+  CVs: tm6_ic 173–322, ionic_lock 173–318, pack 163–332, npxxY 380–173. ε=0.2 nm.
+  CPU assemble only. GPU off until eq.pdb exists for this named shot.
+
+objective:
+  type: conformational_shift
+  discover_cvs: false
+  observables:
+    - name: tm6_ic
+      kind: distance
+      selection: "name CA and resid 173 ; name CA and resid 322"
+      precision: 0.2
+    - name: ionic_lock
+      kind: distance
+      selection: "name CA and resid 173 ; name CA and resid 318"
+      precision: 0.2
+    - name: tm3_tm6_pack
+      kind: distance
+      selection: "name CA and resid 163 ; name CA and resid 332"
+      precision: 0.2
+    - name: npxxY
+      kind: distance
+      selection: "name CA and resid 380 ; name CA and resid 173"
+      precision: 0.2
+
+orientation:
+  method: auto
+  topology: out
+
+membrane:
+  lipids:
+    POPC: 1.0
+  optimize_size: true
+  safety_margin_nm: 1.2
+  water_pad_nm: 1.2
+  ionic_strength_M: 0.15
+
+compute:
+  max_gpu_hours: 1.0
+  max_wall_hours: 12
+
+seed: 44

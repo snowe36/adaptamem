@@ -1,0 +1,44 @@
+name: htr2a_6wha
+structure: ../data/structures/6WHA_A.pdb
+notes: >
+  Active 5-HT2A start (6WHA chain A, receptor only). Pair with htr2a_6a94.
+  TM6 is the hard hold-out; seed both basins. CPU assemble only.
+
+objective:
+  type: conformational_shift
+  discover_cvs: false
+  observables:
+    - name: tm6_ic
+      kind: distance
+      selection: "name CA and resid 173 ; name CA and resid 322"
+      precision: 0.2
+    - name: ionic_lock
+      kind: distance
+      selection: "name CA and resid 173 ; name CA and resid 318"
+      precision: 0.2
+    - name: tm3_tm6_pack
+      kind: distance
+      selection: "name CA and resid 163 ; name CA and resid 332"
+      precision: 0.2
+    - name: npxxY
+      kind: distance
+      selection: "name CA and resid 380 ; name CA and resid 173"
+      precision: 0.2
+
+orientation:
+  method: auto
+  topology: out
+
+membrane:
+  lipids:
+    POPC: 1.0
+  optimize_size: true
+  safety_margin_nm: 1.2
+  water_pad_nm: 1.2
+  ionic_strength_M: 0.15
+
+compute:
+  max_gpu_hours: 1.0
+  max_wall_hours: 12
+
+seed: 46

@@ -68,7 +68,16 @@ def one_start(workdir: Path, ns: float) -> None:
 
 def main() -> int:
     os.chdir(ROOT)
-    from adaptamem.correction import require_teacher_gpu
+    import json
+
+    from adaptamem.correction import (
+        load_prior_correction,
+        load_target_teachers,
+        named_teacher_workdirs,
+        refuse_forbidden_starts,
+        require_teacher_gpu,
+        score_prior_correction,
+    )
     from adaptamem.errors import RefuseError
     from adaptamem.gpu_contract import enable_no_cpu_fallback, stack_note
 
@@ -87,10 +96,14 @@ def main() -> int:
         print("TEACHER_FAIL", flush=True)
         return 2
 
-    raw = os.environ.get("ADAPTAMEM_WORKDIRS") or "runs/2rh1,runs/3sn6"
-    ns = float(os.environ.get("ORACLE_NS") or "2")
-    workdirs = [Path(p.strip()) for p in raw.split(",") if p.strip()]
+    man = load_prior_correction()
+    if os.environ.get("ADAPTAMEM_WORKDIRS"):
+        workdirs = [Path(p.strip()) for p in os.environ["ADAPTAMEM_WORKDIRS"].split(",") if p.strip()]
+    else:
+        workdirs = named_teacher_workdirs(man)
+    ns = float(os.environ.get("ORACLE_NS") or man["teacher"]["ns_per_start"])
     try:
+        refuse_forbidden_starts(workdirs)
         for wd in workdirs:
             assembled = wd / "assembled.pdb"
             xml = wd / "system.xml"
@@ -99,6 +112,11 @@ def main() -> int:
                 print("TEACHER_FAIL", flush=True)
                 return 2
             one_start(wd, ns)
+        traces, hours = load_target_teachers(man, root=ROOT)
+        scored = score_prior_correction(man, traces, gpu_hours=hours)
+        out = ROOT / "runs" / "prior_correction_v1.json"
+        out.write_text(json.dumps(scored, indent=2) + "\n")
+        log(f"SCORED    {out}  gpu-h={hours:.4f}")
     except Exception:
         traceback.print_exc()
         print("TEACHER_FAIL", flush=True)

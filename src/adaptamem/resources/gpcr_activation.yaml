@@ -83,8 +83,8 @@ proteins:
   - id: htr2a
     name: 5HT2A
     uniprot: P28223
-    inactive: {pdb: 6A94, chain: A, file: data/structures/6A94.pdb}
-    active: {pdb: 6WHA, chain: A, file: data/structures/6WHA.pdb, method: EM}
+    inactive: {pdb: 6A94, chain: A, file: data/structures/6A94_A.pdb}
+    active: {pdb: 6WHA, chain: A, file: data/structures/6WHA_A.pdb, method: EM}
     residues:
       tm6_ic: [173, 322]
       ionic_lock: [173, 318]

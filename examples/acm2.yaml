@@ -1,0 +1,45 @@
+name: acm2_3uon
+structure: ../data/structures/3UON.pdb
+notes: >
+  Adversarial hold-out. M2 inactive X-ray 3UON; family prior invents an ionic-lock
+  opening (0.68 nm vs crystal 0.14 nm). CVs: tm6_ic 121–386, lock 121–382,
+  pack 111–396, npxxY 440–121. CPU assemble only.
+
+objective:
+  type: conformational_shift
+  discover_cvs: false
+  observables:
+    - name: tm6_ic
+      kind: distance
+      selection: "name CA and resid 121 ; name CA and resid 386"
+      precision: 0.2
+    - name: ionic_lock
+      kind: distance
+      selection: "name CA and resid 121 ; name CA and resid 382"
+      precision: 0.2
+    - name: tm3_tm6_pack
+      kind: distance
+      selection: "name CA and resid 111 ; name CA and resid 396"
+      precision: 0.2
+    - name: npxxY
+      kind: distance
+      selection: "name CA and resid 440 ; name CA and resid 121"
+      precision: 0.2
+
+orientation:
+  method: auto
+  topology: out
+
+membrane:
+  lipids:
+    POPC: 1.0
+  optimize_size: true
+  safety_margin_nm: 1.2
+  water_pad_nm: 1.2
+  ionic_strength_M: 0.15
+
+compute:
+  max_gpu_hours: 1.0
+  max_wall_hours: 12
+
+seed: 45

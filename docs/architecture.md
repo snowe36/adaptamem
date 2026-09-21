@@ -79,7 +79,7 @@ Loop: structure → CPU prior → infer → if uncertain, tiny MD teacher → co
 |--|----------|------|
 | 1 Mechanistic teacher | Two wells vs missing path vs 1D coverage | `decide` on frozen β2AR teacher |
 | 2 Zero-shot prior | Other proteins' structures predict a **held-out** protein's activation coordinates | `loo`; hold-out traces are `LEAKAGE` |
-| 3 Adaptive correction | Error reduction per GPU-hour on coordinates the prior gets wrong (ionic lock, mechanism), not a 1 μs TM6 mean-match | `correct`; GPU off until a named shot has `eq.pdb`; oracle never trains |
+| 3 Adaptive correction | Tiny MD only where a frozen CPU prior is wrong (5-HT2A TM6, M2 lock); β2AR TM6 is the no-teacher control | `prior_correction_v1`; GPU off until `eq.pdb` |
 
 Experiment 2 starts from crystals, not trajectories. `adaptamem loo` on a 10-protein catalog (β2AR, rhodopsin, A2A, μOR, M2, β1AR, κOR, 5-HT2A, CB1, D2). TM6 reaches ε on every fold except **5-HT2A**. Ionic lock fails on β2AR, A2A, and M2. Packing is hidden except κOR. Hold-out traces remain `LEAKAGE`. Experiment 3 is not “run 1 μs and match TM6.” It is: the CPU prior predicts a held-out protein; tiny MD runs only where the prior is unconfident or wrong (β2AR lock, M2 invented lock, 5-HT2A TM6, `pack_in_inactive_tm6`); the score is error reduction per GPU-hour vs a conventional oracle the method never sees. GPU stays off until a named shot has `eq.pdb`.
 

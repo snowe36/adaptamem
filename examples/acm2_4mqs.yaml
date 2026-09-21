@@ -1,0 +1,44 @@
+name: acm2_4mqs
+structure: ../data/structures/4MQS_A.pdb
+notes: >
+  Active M2 start (4MQS chain A). Pair with acm2_3uon. Lock barely opens at the
+  crystals; the family prior predicts a large opening. CPU assemble only.
+
+objective:
+  type: conformational_shift
+  discover_cvs: false
+  observables:
+    - name: tm6_ic
+      kind: distance
+      selection: "name CA and resid 121 ; name CA and resid 386"
+      precision: 0.2
+    - name: ionic_lock
+      kind: distance
+      selection: "name CA and resid 121 ; name CA and resid 382"
+      precision: 0.2
+    - name: tm3_tm6_pack
+      kind: distance
+      selection: "name CA and resid 111 ; name CA and resid 396"
+      precision: 0.2
+    - name: npxxY
+      kind: distance
+      selection: "name CA and resid 440 ; name CA and resid 121"
+      precision: 0.2
+
+orientation:
+  method: auto
+  topology: out
+
+membrane:
+  lipids:
+    POPC: 1.0
+  optimize_size: true
+  safety_margin_nm: 1.2
+  water_pad_nm: 1.2
+  ionic_strength_M: 0.15
+
+compute:
+  max_gpu_hours: 1.0
+  max_wall_hours: 12
+
+seed: 47

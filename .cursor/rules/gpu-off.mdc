@@ -5,8 +5,8 @@ alwaysApply: true
 
 # GPU off
 
-`src/adaptamem/resources/experiment3.yaml` has `gpu: false`. Do not create, start, resume, or reuse Runpod GPU or CPU pods, serverless workers, or clusters. Do not run `adaptamem oracle`, `produce`, or `gpu`.
+`src/adaptamem/resources/prior_correction_v1.yaml` is frozen (`gpu: false`, `eq_pdb: false`). Do not create, start, resume, or reuse Runpod GPU or CPU pods, serverless workers, or clusters. Do not run `adaptamem oracle`, `produce`, or `gpu`. Do not write `eq.pdb` until that manifest names the prediction, ε, hypothesis, and stopping rule — it already does, and GPU still stays off until `gpu: true` is set.
 
-If `list-pods` or `list-endpoints` is non-empty, terminate/delete those resources. Empty is the required overnight state.
+If `list-pods` or `list-endpoints` is non-empty, terminate/delete those resources.
 
-CPU work (catalog, LOO, `correct`, tests, protocol) is allowed. The next GPU hour is only legal after the protocol sets `gpu: true` **and** a named shot has `eq.pdb`.
+CPU work is allowed. The first GPU hour is a prior-correction teacher on 5-HT2A TM6 and M2 ionic lock, scored against the frozen crystal endpoints. It is not “run these proteins.” β2AR TM6 needs no teacher.
